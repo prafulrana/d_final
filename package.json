@@ -1,0 +1,15 @@
+{
+  "name": "deepstream-tester",
+  "version": "1.0.0",
+  "description": "DeepStream AI Pipeline Tester with Anti-Retard Measures",
+  "scripts": {
+    "start": "sudo systemctl restart docker && sudo systemctl restart deepstream-tester",
+    "test": "./golden-flow-test.sh"
+  },
+  "dependencies": {
+    "express": "^4.18.0",
+    "cors": "^2.8.5",
+    "axios": "^1.3.0",
+    "ws": "^8.14.0"
+  }
+}

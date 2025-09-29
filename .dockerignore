@@ -1,0 +1,9 @@
+**/.claude
+**/.claude/
+.claude
+.claude/
+.claude/*
+.git/
+*.md
+run.sh
+build.sh
