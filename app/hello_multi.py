@@ -7,7 +7,7 @@ gi.require_version("GstRtspServer", "1.0")
 from gi.repository import Gst, GstRtspServer
 
 
-def start_rtsp_server(rtsp_port=8554, mounts=("/out0", "/out1"), udp_ports=(5600, 5602)):
+def start_rtsp_server(rtsp_port=8554, mounts=tuple(f"/out{i}" for i in range(8)), udp_ports=tuple(5600 + i for i in range(8))):
     Gst.init(None)
     server = GstRtspServer.RTSPServer.new()
     server.props.service = str(rtsp_port)
@@ -25,37 +25,37 @@ def start_rtsp_server(rtsp_port=8554, mounts=("/out0", "/out1"), udp_ports=(5600
         factory.set_launch(launch)
         return factory
 
-    mounts_obj.add_factory(mounts[0], make_factory(udp_ports[0]))
-    mounts_obj.add_factory(mounts[1], make_factory(udp_ports[1]))
+    for i in range(len(mounts)):
+        mounts_obj.add_factory(mounts[i], make_factory(udp_ports[i]))
     server.attach(None)
-    print(f"RTSP server listening on rtsp://0.0.0.0:{rtsp_port}{mounts[0]} and {mounts[1]}")
+    mount_list = ", ".join(mounts)
+    print(f"RTSP server listening on rtsp://0.0.0.0:{rtsp_port} with mounts: {mount_list}")
     return server
 
 
 def main():
-    uri0 = os.environ.get(
-        "URI0",
+    # Sample URIs cycling through available samples
+    uris = [
         "file:///opt/nvidia/deepstream/deepstream/samples/streams/sample_1080p_h264.mp4",
-    )
-    uri1 = os.environ.get(
-        "URI1",
         "file:///opt/nvidia/deepstream/deepstream/samples/streams/sample_1080p_h265.mp4",
-    )
+    ]
+    # Create 8 URIs by cycling through the available samples
+    stream_uris = [uris[i % len(uris)] for i in range(8)]
 
     server = start_rtsp_server(rtsp_port=int(os.environ.get("RTSP_PORT", "8554")))
 
-    pipeline = Pipeline("two_in_two_out")
+    pipeline = Pipeline("eight_stream_batch")
 
     pipeline.add(
         "nvmultiurisrcbin",
         "srcs",
         {
-            "uri-list": ",".join([uri0, uri1]),
-            "sensor-id-list": "0,1",
-            "sensor-name-list": "cam0,cam1",
+            "uri-list": ",".join(stream_uris),
+            "sensor-id-list": ",".join(str(i) for i in range(8)),
+            "sensor-name-list": ",".join(f"cam{i}" for i in range(8)),
             "live-source": True,
             "file-loop": True,
-            "max-batch-size": 2,
+            "max-batch-size": 8,
             "width": 1280,
             "height": 720,
             "batched-push-timeout": 100000,
@@ -78,54 +78,37 @@ def main():
 
     pgie_config = os.environ.get(
         "PGIE_CONFIG",
-        "/opt/nvidia/deepstream/deepstream-8.0/pgie_b2.txt",
+        "/opt/nvidia/deepstream/deepstream-8.0/pgie_b8.txt",
     )
     pipeline.add("nvinfer", "pgie", {"config-file-path": pgie_config})
 
     pipeline.add("nvstreamdemux", "demux")
 
-    # Per-stream branches: demux -> caps -> queue -> OSD -> nvvideoconvert -> NV12 caps -> encoder -> parse -> pay -> UDP
-    pipeline.add("capsfilter", "dcaps0", {"caps": "video/x-raw(memory:NVMM)"})
-    pipeline.add("queue", "q0")
-    pipeline.add("nvosdbin", "osd0")
-    pipeline.add("nvvideoconvert", "conv0")
-    pipeline.add("capsfilter", "caps0", {"caps": "video/x-raw(memory:NVMM), format=NV12, framerate=30/1"})
-    pipeline.add("nvv4l2h264enc", "enc0", {
-        "bitrate": 4000000,
-        "insert-sps-pps": 1,
-        "iframeinterval": int(30),
-        "idrinterval": int(30),
-        "intra-refresh": "0,0,0"
-    })
-    pipeline.add("h264parse", "h264parse0")
-    pipeline.add("rtph264pay", "pay0", {"pt": 96})
-    pipeline.add("udpsink", "udp0", {"host": "127.0.0.1", "port": 5600, "async": False, "sync": True})
-
-    pipeline.add("capsfilter", "dcaps1", {"caps": "video/x-raw(memory:NVMM)"})
-    pipeline.add("queue", "q1")
-    pipeline.add("nvosdbin", "osd1")
-    pipeline.add("nvvideoconvert", "conv1")
-    pipeline.add("capsfilter", "caps1", {"caps": "video/x-raw(memory:NVMM), format=NV12, framerate=30/1"})
-    pipeline.add("nvv4l2h264enc", "enc1", {
-        "bitrate": 4000000,
-        "insert-sps-pps": 1,
-        "iframeinterval": int(30),
-        "idrinterval": int(30),
-        "intra-refresh": "0,0,0"
-    })
-    pipeline.add("h264parse", "h264parse1")
-    pipeline.add("rtph264pay", "pay1", {"pt": 96})
-    pipeline.add("udpsink", "udp1", {"host": "127.0.0.1", "port": 5602, "async": False, "sync": True})
+    # Generate 8 per-stream branches: demux -> caps -> queue -> OSD -> nvvideoconvert -> NV12 caps -> encoder -> parse -> pay -> UDP
+    for i in range(8):
+        pipeline.add("capsfilter", f"dcaps{i}", {"caps": "video/x-raw(memory:NVMM)"})
+        pipeline.add("queue", f"q{i}")
+        pipeline.add("nvosdbin", f"osd{i}")
+        pipeline.add("nvvideoconvert", f"conv{i}")
+        pipeline.add("capsfilter", f"caps{i}", {"caps": "video/x-raw(memory:NVMM), format=NV12, framerate=30/1"})
+        pipeline.add("nvv4l2h264enc", f"enc{i}", {
+            "bitrate": 4000000,
+            "insert-sps-pps": 1,
+            "iframeinterval": int(30),
+            "idrinterval": int(30),
+            "intra-refresh": "0,0,0"
+        })
+        pipeline.add("h264parse", f"h264parse{i}")
+        pipeline.add("rtph264pay", f"pay{i}", {"pt": 96})
+        pipeline.add("udpsink", f"udp{i}", {"host": "127.0.0.1", "port": 5600 + i, "async": False, "sync": True})
 
     # Main chain (nvmultiurisrcbin already does decode + mux internally)
     pipeline.link("srcs", "pgie", "demux")
 
-    # Demux to branches using pad hints
-    pipeline.link(("demux", "dcaps0"), ("src_%u", ""))
-    pipeline.link("dcaps0", "q0", "osd0", "conv0", "caps0", "enc0", "h264parse0", "pay0", "udp0")
-
-    pipeline.link(("demux", "dcaps1"), ("src_%u", ""))
-    pipeline.link("dcaps1", "q1", "osd1", "conv1", "caps1", "enc1", "h264parse1", "pay1", "udp1")
+    # Link demux to all 8 stream branches
+    for i in range(8):
+        pipeline.link(("demux", f"dcaps{i}"), ("src_%u", ""))
+        pipeline.link(f"dcaps{i}", f"q{i}", f"osd{i}", f"conv{i}", f"caps{i}", f"enc{i}", f"h264parse{i}", f"pay{i}", f"udp{i}")
 
     pipeline.start().wait()
 
