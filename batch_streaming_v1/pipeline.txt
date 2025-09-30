@@ -1,1 +1,38 @@
-nvmultiurisrcbin uri-list="file:///opt/nvidia/deepstream/deepstream/samples/streams/sample_1080p_h264.mp4,file:///opt/nvidia/deepstream/deepstream/samples/streams/sample_1080p_h265.mp4,file:///opt/nvidia/deepstream/deepstream/samples/streams/sample_1080p_h264.mp4,file:///opt/nvidia/deepstream/deepstream/samples/streams/sample_1080p_h265.mp4" max-batch-size=4 batched-push-timeout=100000 width=1280 height=720 file-loop=true sync-inputs=true attach-sys-ts=true drop-on-latency=false ! nvinfer config-file-path=/opt/nvidia/deepstream/deepstream-8.0/pgie.txt ! nvstreamdemux name=demux demux.src_0 ! queue ! video/x-raw(memory:NVMM) ! nvosdbin ! nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12,framerate=30/1 ! nvv4l2h264enc bitrate=4000000 insert-sps-pps=1 iframeinterval=30 idrinterval=30 ! h264parse ! rtph264pay pt=96 ! udpsink host=127.0.0.1 port=5600 async=false sync=true demux.src_1 ! queue ! video/x-raw(memory:NVMM) ! nvosdbin ! nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12,framerate=30/1 ! nvv4l2h264enc bitrate=4000000 insert-sps-pps=1 iframeinterval=30 idrinterval=30 ! h264parse ! rtph264pay pt=96 ! udpsink host=127.0.0.1 port=5601 async=false sync=true demux.src_2 ! queue ! video/x-raw(memory:NVMM) ! nvosdbin ! nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12,framerate=30/1 ! nvv4l2h264enc bitrate=4000000 insert-sps-pps=1 iframeinterval=30 idrinterval=30 ! h264parse ! rtph264pay pt=96 ! udpsink host=127.0.0.1 port=5602 async=false sync=true demux.src_3 ! queue ! video/x-raw(memory:NVMM) ! nvosdbin ! nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12,framerate=30/1 ! nvv4l2h264enc bitrate=4000000 insert-sps-pps=1 iframeinterval=30 idrinterval=30 ! h264parse ! rtph264pay pt=96 ! udpsink host=127.0.0.1 port=5603 async=false sync=true
+# 4-stream batch inference pipeline
+# Architecture: source → batch inference → demux → per-stream OSD+encode → UDP → RTSP
+
+nvmultiurisrcbin \
+  uri-list="file:///opt/nvidia/deepstream/deepstream/samples/streams/sample_1080p_h264.mp4,file:///opt/nvidia/deepstream/deepstream/samples/streams/sample_1080p_h265.mp4,file:///opt/nvidia/deepstream/deepstream/samples/streams/sample_1080p_h264.mp4,file:///opt/nvidia/deepstream/deepstream/samples/streams/sample_1080p_h265.mp4" \
+  max-batch-size=4 \
+  batched-push-timeout=100000 \
+  width=1280 height=720 \
+  file-loop=true \
+  sync-inputs=true \
+  attach-sys-ts=true \
+  drop-on-latency=false \
+! nvinfer config-file-path=/opt/nvidia/deepstream/deepstream-8.0/pgie.txt \
+! nvstreamdemux name=demux \
+\
+demux.src_0 ! queue ! video/x-raw(memory:NVMM) ! nvosdbin ! nvvideoconvert \
+  ! video/x-raw(memory:NVMM),format=NV12,framerate=30/1 \
+  ! nvv4l2h264enc bitrate=4000000 insert-sps-pps=1 iframeinterval=30 idrinterval=30 \
+  ! h264parse ! rtph264pay pt=96 \
+  ! udpsink host=127.0.0.1 port=5600 async=false sync=true \
+\
+demux.src_1 ! queue ! video/x-raw(memory:NVMM) ! nvosdbin ! nvvideoconvert \
+  ! video/x-raw(memory:NVMM),format=NV12,framerate=30/1 \
+  ! nvv4l2h264enc bitrate=4000000 insert-sps-pps=1 iframeinterval=30 idrinterval=30 \
+  ! h264parse ! rtph264pay pt=96 \
+  ! udpsink host=127.0.0.1 port=5601 async=false sync=true \
+\
+demux.src_2 ! queue ! video/x-raw(memory:NVMM) ! nvosdbin ! nvvideoconvert \
+  ! video/x-raw(memory:NVMM),format=NV12,framerate=30/1 \
+  ! nvv4l2h264enc bitrate=4000000 insert-sps-pps=1 iframeinterval=30 idrinterval=30 \
+  ! h264parse ! rtph264pay pt=96 \
+  ! udpsink host=127.0.0.1 port=5602 async=false sync=true \
+\
+demux.src_3 ! queue ! video/x-raw(memory:NVMM) ! nvosdbin ! nvvideoconvert \
+  ! video/x-raw(memory:NVMM),format=NV12,framerate=30/1 \
+  ! nvv4l2h264enc bitrate=4000000 insert-sps-pps=1 iframeinterval=30 idrinterval=30 \
+  ! h264parse ! rtph264pay pt=96 \
+  ! udpsink host=127.0.0.1 port=5603 async=false sync=true

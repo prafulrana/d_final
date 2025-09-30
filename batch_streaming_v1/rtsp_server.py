@@ -12,7 +12,7 @@ from gi.repository import Gst, GstRtspServer, GLib
 PORT_BASE = 5600
 
 class RtspPostDemux:
-    def __init__(self, pipeline_desc: str, streams: int = 30):
+    def __init__(self, pipeline_desc: str, streams: int = 4):
         Gst.init(None)
         self.loop = GLib.MainLoop()
         self.pipeline = Gst.parse_launch(pipeline_desc)
