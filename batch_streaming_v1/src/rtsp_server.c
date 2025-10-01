@@ -31,6 +31,7 @@ typedef struct {
   guint auto_add_samples;   // number of sample streams to auto-add (0=disabled)
   guint auto_add_wait_ms;   // initial wait before auto-add posts (ms)
   gchar *sample_uri;        // sample URI to add (defaults to DS sample_1080p)
+  gchar *public_host;       // host/IP to use in returned RTSP URLs
 } AppConfig;
 
 //
@@ -56,6 +57,7 @@ static gboolean parse_args(int argc, char *argv[], AppConfig *cfg) {
   cfg->auto_add_samples = 0;
   cfg->auto_add_wait_ms = 1000;
   cfg->sample_uri = g_strdup("file:///opt/nvidia/deepstream/deepstream/samples/streams/sample_1080p_h264.mp4");
+  cfg->public_host = g_strdup("127.0.0.1");
 
   // CLI (optional; first arg can be a file path for compatibility)
   if (argc >= 2 && g_file_test(argv[1], G_FILE_TEST_EXISTS)) {
@@ -72,6 +74,7 @@ static gboolean parse_args(int argc, char *argv[], AppConfig *cfg) {
   if ((env = g_getenv("AUTO_ADD_SAMPLES"))) cfg->auto_add_samples = (guint) g_ascii_strtoull(env, NULL, 10);
   if ((env = g_getenv("AUTO_ADD_WAIT_MS"))) cfg->auto_add_wait_ms = (guint) g_ascii_strtoull(env, NULL, 10);
   if ((env = g_getenv("SAMPLE_URI"))) { g_free(cfg->sample_uri); cfg->sample_uri = g_strdup(env); }
+  if ((env = g_getenv("PUBLIC_HOST"))) { g_free(cfg->public_host); cfg->public_host = g_strdup(env); }
 
   return TRUE;
 }
@@ -79,6 +82,7 @@ static gboolean parse_args(int argc, char *argv[], AppConfig *cfg) {
 static void cleanup_config(AppConfig *cfg) {
   g_free(cfg->pipeline_txt);
   g_free(cfg->sample_uri);
+  g_free(cfg->public_host);
 }
 
 // --- Global state for dynamic add + control API
@@ -92,6 +96,7 @@ static guint g_base_udp_port_glb = 5000;
 static gboolean g_use_osd_glb = TRUE;
 static GMutex g_state_lock;
 static guint g_ctrl_port = 0;
+static const gchar *g_public_host = NULL;
 
 // --- Minimal HTTP POST helper to nvmultiurisrcbin REST (localhost:9010)
 static gboolean http_post_localhost_port(const char *port_str, const char *path, const char *json, size_t json_len) {
@@ -276,11 +281,11 @@ static gboolean add_branch_and_mount(guint index, gchar **out_path, gchar **out_
   gst_rtsp_media_factory_set_latency(factory, 100);
   gst_rtsp_mount_points_add_factory(mounts, path, factory);
   g_object_unref(mounts);
-  g_print("RTSP mounted: rtsp://127.0.0.1:%u%s (udp-wrap H264 RTP @127.0.0.1:%u)\n", g_rtsp_port, path, port);
+  g_print("RTSP mounted: rtsp://%s:%u%s (udp-wrap H264 RTP @127.0.0.1:%u)\n", g_public_host ? g_public_host : "127.0.0.1", g_rtsp_port, path, port);
 
   if (out_path) *out_path = g_strdup(path);
   if (out_url) {
-    *out_url = g_strdup_printf("rtsp://127.0.0.1:%u%s", g_rtsp_port, path);
+    *out_url = g_strdup_printf("rtsp://%s:%u%s", g_public_host ? g_public_host : "127.0.0.1", g_rtsp_port, path);
   }
   g_free(path); g_free(launch);
   g_mutex_unlock(&g_state_lock);
@@ -489,7 +494,7 @@ static GMutex g_state_lock;
     gst_rtsp_media_factory_set_shared(f_test, TRUE);
     gst_rtsp_media_factory_set_latency(f_test, 100);
     gst_rtsp_mount_points_add_factory(mounts, "/test", f_test);
-    g_print("RTSP mounted: rtsp://127.0.0.1:%u/test (synthetic)\n", chosen_port);
+    g_print("RTSP mounted: rtsp://%s:%u/test (synthetic)\n", g_public_host ? g_public_host : "127.0.0.1", chosen_port);
   }
   for (guint i = 0; i < cfg->streams; ++i) {
     guint port = 5000 + i;
@@ -547,6 +552,7 @@ int main(int argc, char *argv[]) {
   g_demux = gst_bin_get_by_name(GST_BIN(pipeline), "demux");
   g_pre_bin = GST_ELEMENT(gst_element_get_parent(g_demux));
   g_next_index = 0;
+  g_public_host = cfg.public_host; // do not free until shutdown
   // Query actual port from server service setting
   const gchar *service = gst_rtsp_server_get_service(server);
   if (service) g_rtsp_port = (guint) g_ascii_strtoull(service, NULL, 10);

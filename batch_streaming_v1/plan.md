@@ -19,13 +19,13 @@ Open items (execution plan)
      - Build per‑stream branch and link to UDP egress at `BASE_UDP_PORT+N`.
      - Mount RTSP factory at `/sN` wrapping UDP (udpsrc name=pay0).
      - POST to nvmultiurisrcbin REST (port 9010) to add `SAMPLE_URI`.
-     - Respond `200` with `{ "path": "/sN", "url": "rtsp://<host>:<rtsp_port>/sN" }`.
+     - Respond `200` with `{ "path": "/sN", "url": "rtsp://<PUBLIC_HOST>:<rtsp_port>/sN" }`.
    - Startup behavior: set `STREAMS=0`; only `/test` is mounted.
 2) Verify end‑to‑end
    - Start empty; curl `/add_demo_stream`; receive JSON; play returned URL via ffplay.
 3) Keep C tiny and readable
    - Single config file; explicit pad linking; narrow API surface.
-   - Minimal envs: `RTSP_PORT`, `BASE_UDP_PORT`, `USE_OSD`, `SAMPLE_URI` (no startup count; service always starts empty).
+   - Minimal envs: `RTSP_PORT`, `BASE_UDP_PORT`, `USE_OSD`, `SAMPLE_URI`, `PUBLIC_HOST` (no startup count; service always starts empty).
 3) Mac testability
    - Validate with ffplay over TCP from macOS; `/s0..s2` must play.
 

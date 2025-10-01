@@ -16,7 +16,7 @@
     - `/test` — synthetic videotestsrc for sanity checks (always available at start).
     - `/sN` — mounted on demand when a stream is added via the control API; wraps from UDP (udpsrc port=<p> buffer-size=524288 name=pay0, H264 RTP).
   - Env vars:
-    - `RTSP_PORT` (default 8554), `BASE_UDP_PORT` (default 5000), `USE_OSD` (default 1).
+    - `RTSP_PORT` (default 8554), `BASE_UDP_PORT` (default 5000), `USE_OSD` (default 1), `PUBLIC_HOST` (used in returned RTSP URLs).
   - Control API (single happy path):
-    - `GET /add_demo_stream` — Adds one demo source (DeepStream sample 1080p) via nvmultiurisrcbin REST and builds a new per‑stream branch. Returns JSON: `{ "path": "/sN", "url": "rtsp://<host>:<port>/sN" }`.
+    - `GET /add_demo_stream` — Adds one demo source (DeepStream sample 1080p) via nvmultiurisrcbin REST and builds a new per‑stream branch. Returns JSON: `{ "path": "/sN", "url": "rtsp://<PUBLIC_HOST>:<rtsp_port>/sN" }`.
 - deepstream-8.0/ — Vendor assets and helper scripts (not modified by this app).

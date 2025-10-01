@@ -32,6 +32,7 @@
 - `BASE_UDP_PORT` — starting UDP port for per‑stream RTP egress (default 5000)
 - `USE_OSD` — enable per‑stream overlays (default 1)
 - `SAMPLE_URI` — demo URI used by `add_demo_stream` (default DS sample 1080p H.264)
+- `PUBLIC_HOST` — host/IP to return in RTSP URLs (default 10.243.249.215 via run.sh; override as needed)
 
 ## Code Cleanliness
 - Favor config strings (pipeline, encoder choices) over code. Keep C small.
