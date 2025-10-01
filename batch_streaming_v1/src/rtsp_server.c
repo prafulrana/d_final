@@ -11,6 +11,8 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netdb.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <unistd.h>
 
 typedef struct {
@@ -78,6 +80,18 @@ static void cleanup_config(AppConfig *cfg) {
   g_free(cfg->pipeline_txt);
   g_free(cfg->sample_uri);
 }
+
+// --- Global state for dynamic add + control API
+static GstPipeline *g_pipeline = NULL;
+static GstElement  *g_pre_bin = NULL;
+static GstElement  *g_demux = NULL;
+static GstRTSPServer *g_rtsp_server = NULL;
+static guint g_rtsp_port = 0;
+static guint g_next_index = 0;
+static guint g_base_udp_port_glb = 5000;
+static gboolean g_use_osd_glb = TRUE;
+static GMutex g_state_lock;
+static guint g_ctrl_port = 0;
 
 // --- Minimal HTTP POST helper to nvmultiurisrcbin REST (localhost:9010)
 static gboolean http_post_localhost_port(const char *port_str, const char *path, const char *json, size_t json_len) {
@@ -273,16 +287,26 @@ static gboolean add_branch_and_mount(guint index, gchar **out_path, gchar **out_
   return TRUE;
 }
 
-static gpointer control_http_thread(gpointer data) {
-  (void)data;
+static int create_ctrl_listener(void) {
   int s = socket(AF_INET, SOCK_STREAM, 0);
-  if (s < 0) { g_printerr("CTRL: socket create failed\n"); return NULL; }
+  if (s < 0) { g_printerr("CTRL: socket create failed\n"); return -1; }
   int opt = 1; setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
   struct sockaddr_in addr; memset(&addr, 0, sizeof(addr));
-  addr.sin_family = AF_INET; addr.sin_addr.s_addr = htonl(INADDR_ANY); addr.sin_port = htons(8080);
-  if (bind(s, (struct sockaddr*)&addr, sizeof(addr)) != 0) { g_printerr("CTRL: bind 8080 failed\n"); close(s); return NULL; }
-  if (listen(s, 16) != 0) { g_printerr("CTRL: listen failed\n"); close(s); return NULL; }
-  g_print("Control API listening on http://0.0.0.0:8080\n");
+  addr.sin_family = AF_INET; addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  for (int port = 8080; port < 8090; ++port) {
+    addr.sin_port = htons((uint16_t)port);
+    if (bind(s, (struct sockaddr*)&addr, sizeof(addr)) == 0) { g_ctrl_port = (guint)port; break; }
+  }
+  if (g_ctrl_port == 0) { g_printerr("CTRL: bind 8080-8089 failed\n"); close(s); return -1; }
+  if (listen(s, 16) != 0) { g_printerr("CTRL: listen failed\n"); close(s); return -1; }
+  g_print("Control API listening on http://0.0.0.0:%u\n", g_ctrl_port);
+  return s;
+}
+
+static gpointer control_http_thread(gpointer data) {
+  (void)data;
+  int s = create_ctrl_listener();
+  if (s < 0) return NULL;
   for (;;) {
     int c = accept(s, NULL, NULL);
     if (c < 0) continue;
