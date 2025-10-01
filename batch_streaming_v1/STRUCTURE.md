@@ -17,4 +17,6 @@
     - `/s0..sN-1` — wraps from UDP (udpsrc port=<p> buffer-size=524288 name=pay0, H264 RTP) for mac‑friendly RTSP.
   - Env vars:
     - `STREAMS` (default 2), `RTSP_PORT` (default 8554), `BASE_UDP_PORT` (default 5000), `USE_OSD` (default 1).
+  - Optional REST wrapper:
+    - If `AUTO_ADD_SAMPLES>0`, after pipeline starts the app posts to nvmultiurisrcbin REST (port 9010) to add N sample 1080p streams. `AUTO_ADD_WAIT_MS` sets initial delay; `SAMPLE_URI` overrides the default sample.
 - deepstream-8.0/ — Vendor assets and helper scripts (not modified by this app).

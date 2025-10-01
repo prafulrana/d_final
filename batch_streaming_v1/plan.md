@@ -9,6 +9,7 @@ Current status
 - /test works (software JPEG RTP).
 - Post‑demux matches DeepStream sample pattern: per‑stream encode + RTP/UDP egress; RTSP factories wrap from UDP (no intervideo).
 - OSD overlays enabled; correct order: convert → RGBA → OSD → convert → NV12 → NVENC.
+ - Optional REST wrapper added: can auto‑add sample sources at runtime (nvmultiurisrcbin REST, port 9010).
 
 Open items (execution plan)
 1) Verify /s0..s1 playback via UDP‑wrapped RTSP
@@ -17,7 +18,7 @@ Open items (execution plan)
    - Mirrors `deepstream_sink_bin.c` UDP-wrap approach.
 2) Keep C tiny and readable
    - Parse only `pipeline.txt`, build/link branches, start RTSP.
-   - Minimal envs: `STREAMS`, `RTSP_PORT`, `BASE_UDP_PORT`, `USE_OSD`.
+   - Minimal envs: `STREAMS`, `RTSP_PORT`, `BASE_UDP_PORT`, `USE_OSD`. Optional: `AUTO_ADD_SAMPLES`, `AUTO_ADD_WAIT_MS`, `SAMPLE_URI`.
 3) Mac testability
    - Validate with ffplay over TCP from macOS; `/s0..s2` must play.
 
@@ -48,6 +49,7 @@ Scope: Keep STREAMS=2 for now. Do not implement yet; capture changes to apply be
 
 6) Batch and pre-demux alignment
 - Require `pipeline.txt max-batch-size == STREAMS`; confirm framerate/resize are set pre-demux to keep NVENC input uniform.
+ - For zero‑source start + auto‑add: leave out `uri-list` and set `max-batch-size` to your expected maximum to avoid editing later.
 
 7) Logging and observability
 - Keep branch link logs. Optionally add lightweight per-branch FPS counters (info-level only) for soak testing.

@@ -8,6 +8,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <unistd.h>
 
 typedef struct {
   // Outputs / serving
@@ -20,6 +24,11 @@ typedef struct {
 
   // Post-demux
   gboolean use_osd;    // insert nvosdbin per branch (default on for overlays)
+
+  // Auto-add sample streams via nvmultiurisrcbin REST
+  guint auto_add_samples;   // number of sample streams to auto-add (0=disabled)
+  guint auto_add_wait_ms;   // initial wait before auto-add posts (ms)
+  gchar *sample_uri;        // sample URI to add (defaults to DS sample_1080p)
 } AppConfig;
 
 //
@@ -42,6 +51,9 @@ static gboolean parse_args(int argc, char *argv[], AppConfig *cfg) {
   cfg->pipeline_txt = g_strdup("/opt/nvidia/deepstream/deepstream-8.0/pipeline.txt");
   cfg->use_osd = TRUE;
   cfg->base_udp_port = 5000;
+  cfg->auto_add_samples = 0;
+  cfg->auto_add_wait_ms = 1000;
+  cfg->sample_uri = g_strdup("file:///opt/nvidia/deepstream/deepstream/samples/streams/sample_1080p_h264.mp4");
 
   // CLI (optional; first arg can be a file path for compatibility)
   if (argc >= 2 && g_file_test(argv[1], G_FILE_TEST_EXISTS)) {
@@ -57,12 +69,95 @@ static gboolean parse_args(int argc, char *argv[], AppConfig *cfg) {
   if ((env = g_getenv("RTSP_PORT"))) cfg->rtsp_port = (guint) g_ascii_strtoull(env, NULL, 10);
   if ((env = g_getenv("USE_OSD"))) cfg->use_osd = (gboolean)(g_ascii_strcasecmp(env, "0") != 0);
   if ((env = g_getenv("BASE_UDP_PORT"))) cfg->base_udp_port = (guint) g_ascii_strtoull(env, NULL, 10);
+  if ((env = g_getenv("AUTO_ADD_SAMPLES"))) cfg->auto_add_samples = (guint) g_ascii_strtoull(env, NULL, 10);
+  if ((env = g_getenv("AUTO_ADD_WAIT_MS"))) cfg->auto_add_wait_ms = (guint) g_ascii_strtoull(env, NULL, 10);
+  if ((env = g_getenv("SAMPLE_URI"))) { g_free(cfg->sample_uri); cfg->sample_uri = g_strdup(env); }
 
   return TRUE;
 }
 
 static void cleanup_config(AppConfig *cfg) {
   g_free(cfg->pipeline_txt);
+  g_free(cfg->sample_uri);
+}
+
+// --- Minimal HTTP POST helper to nvmultiurisrcbin REST (localhost:9010)
+static gboolean http_post_localhost_9010(const char *path, const char *json, size_t json_len) {
+  struct addrinfo hints; memset(&hints, 0, sizeof(hints));
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  struct addrinfo *res = NULL;
+  int err = getaddrinfo("127.0.0.1", "9010", &hints, &res);
+  if (err != 0 || !res) {
+    g_printerr("REST: getaddrinfo failed: %s\n", gai_strerror(err));
+    if (res) freeaddrinfo(res);
+    return FALSE;
+  }
+  int s = -1; struct addrinfo *rp;
+  for (rp = res; rp != NULL; rp = rp->ai_next) {
+    s = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+    if (s == -1) continue;
+    if (connect(s, rp->ai_addr, rp->ai_addrlen) == 0) break;
+    close(s); s = -1;
+  }
+  freeaddrinfo(res);
+  if (s == -1) { g_printerr("REST: connect failed\n"); return FALSE; }
+
+  gchar *req = g_strdup_printf(
+    "POST %s HTTP/1.1\r\n"
+    "Host: 127.0.0.1:9010\r\n"
+    "Content-Type: application/json\r\n"
+    "Content-Length: %zu\r\n"
+    "Connection: close\r\n\r\n",
+    path, json_len);
+
+  ssize_t n = send(s, req, strlen(req), 0);
+  g_free(req);
+  if (n < 0) { g_printerr("REST: send header failed\n"); close(s); return FALSE; }
+  if (json_len > 0) {
+    ssize_t m = send(s, json, json_len, 0);
+    if (m < 0) { g_printerr("REST: send body failed\n"); close(s); return FALSE; }
+  }
+  char buf[512];
+  (void)recv(s, buf, sizeof(buf), 0); // best-effort read and ignore
+  close(s);
+  return TRUE;
+}
+
+typedef struct {
+  guint count;
+  guint delay_ms;
+  gchar *sample_uri;
+} AutoAddCtx;
+
+static gpointer auto_add_thread(gpointer data) {
+  AutoAddCtx *ctx = (AutoAddCtx *)data;
+  g_usleep((gulong)ctx->delay_ms * 1000);
+  for (guint i = 0; i < ctx->count; ++i) {
+    gchar *body = g_strdup_printf(
+      "{\n"
+      "  \"key\": \"sensor\",\n"
+      "  \"value\": {\n"
+      "    \"camera_id\": \"auto_%u\",\n"
+      "    \"camera_url\": \"%s\",\n"
+      "    \"change\": \"camera_add\",\n"
+      "    \"metadata\": {\n"
+      "      \"resolution\": \"1920x1080\",\n"
+      "      \"codec\": \"h264\",\n"
+      "      \"framerate\": 30\n"
+      "    }\n"
+      "  },\n"
+      "  \"headers\": { \"source\": \"app\" }\n"
+      "}\n",
+      i, ctx->sample_uri);
+    gboolean ok = http_post_localhost_9010("/api/v1/stream/add", body, strlen(body));
+    g_print("REST: add sample %u -> %s\n", i, ok ? "OK" : "FAIL");
+    g_free(body);
+    g_usleep(300 * 1000); // slight gap between additions
+  }
+  g_free(ctx->sample_uri);
+  g_free(ctx);
+  return NULL;
 }
 
 static void on_bus_message(GstBus *bus, GstMessage *msg, gpointer user_data) {
@@ -271,6 +366,16 @@ int main(int argc, char *argv[]) {
 
   // Start pipeline
   gst_element_set_state(GST_ELEMENT(pipeline), GST_STATE_PLAYING);
+  // Optional: auto-add sample sources via REST
+  if (cfg.auto_add_samples > 0) {
+    AutoAddCtx *ctx = g_new0(AutoAddCtx, 1);
+    ctx->count = cfg.auto_add_samples;
+    ctx->delay_ms = cfg.auto_add_wait_ms;
+    ctx->sample_uri = g_strdup(cfg.sample_uri);
+    GThread *t = g_thread_new("auto_add_samples", auto_add_thread, ctx);
+    (void)t;
+    g_print("REST: scheduled auto-add of %u sample streams after %u ms\n", cfg.auto_add_samples, cfg.auto_add_wait_ms);
+  }
   (void)server; // already logged chosen port during build
 
   // Main loop

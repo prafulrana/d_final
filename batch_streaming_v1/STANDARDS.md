@@ -24,11 +24,16 @@
  - OSD overlays are enabled by default (`USE_OSD=1`), matching DeepStream samples. Disable only for scale testing.
  - Queue per branch is tuned for low latency: `leaky=2` (downstream) and `max-size-time=200ms`.
  - RTSP factories wrap UDP using `udpsrc port=<p> buffer-size=524288 name=pay0` with H264 RTP caps.
+ - Optional REST wrapper: set `AUTO_ADD_SAMPLES=N` to add N sample sources at runtime via nvmultiurisrcbin REST (port 9010). For a zero‑source start, omit `uri-list` in `pipeline.txt` and ensure `max-batch-size >= N`.
 
 ## Minimal Env Vars
 - `STREAMS` — number of `/sN` endpoints to expose (default 2)
 - `RTSP_PORT` — RTSP TCP port (default 8554; auto‑increments if busy)
 - `BASE_UDP_PORT` — starting UDP port for per‑stream RTP egress (default 5000)
+ - `USE_OSD` — enable per‑stream overlays (default 1)
+ - `AUTO_ADD_SAMPLES` — if >0, auto‑add this many sample streams via REST (default 0)
+ - `AUTO_ADD_WAIT_MS` — initial delay before auto‑add posts (default 1000 ms)
+ - `SAMPLE_URI` — URI used when auto‑adding (default DS sample 1080p H.264)
 
 ## Code Cleanliness
 - Favor config strings (pipeline, encoder choices) over code. Keep C small.
