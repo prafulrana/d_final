@@ -13,10 +13,10 @@
   - Builds post‑demux branches and links `nvstreamdemux` request pads.
   - Per‑stream branch: queue (leaky downstream, 200ms limit) → nvvideoconvert → caps video/x-raw(memory:NVMM),format=RGBA → (nvosdbin) → nvvideoconvert → caps video/x-raw(memory:NVMM),format=NV12 → nvv4l2h264enc → h264parse → rtph264pay → udpsink(127.0.0.1:BASE_UDP_PORT+N)
   - Starts GstRtspServer and mounts endpoints:
-    - `/test` — synthetic videotestsrc for sanity checks.
-    - `/s0..sN-1` — wraps from UDP (udpsrc port=<p> buffer-size=524288 name=pay0, H264 RTP) for mac‑friendly RTSP.
+    - `/test` — synthetic videotestsrc for sanity checks (always available at start).
+    - `/sN` — mounted on demand when a stream is added via the control API; wraps from UDP (udpsrc port=<p> buffer-size=524288 name=pay0, H264 RTP).
   - Env vars:
-    - `STREAMS` (default 2), `RTSP_PORT` (default 8554), `BASE_UDP_PORT` (default 5000), `USE_OSD` (default 1).
-  - Optional REST wrapper:
-    - If `AUTO_ADD_SAMPLES>0`, after pipeline starts the app posts to nvmultiurisrcbin REST (port 9010) to add N sample 1080p streams. `AUTO_ADD_WAIT_MS` sets initial delay; `SAMPLE_URI` overrides the default sample.
+    - `RTSP_PORT` (default 8554), `BASE_UDP_PORT` (default 5000), `USE_OSD` (default 1).
+  - Control API (single happy path):
+    - `GET /add_demo_stream` — Adds one demo source (DeepStream sample 1080p) via nvmultiurisrcbin REST and builds a new per‑stream branch. Returns JSON: `{ "path": "/sN", "url": "rtsp://<host>:<port>/sN" }`.
 - deepstream-8.0/ — Vendor assets and helper scripts (not modified by this app).

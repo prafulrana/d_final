@@ -1,6 +1,6 @@
 # Plan
 
-Goal: Minimal C, single config. Post‑demux work stays simple; C only boots the pipeline and exposes RTSP mounts that are easy to test from macOS.
+Goal: Minimal C, single config. Single happy path: start empty (only `/test`), add demo streams via a tiny control API that returns the RTSP URL.
 
 Pre‑change rule
 - Always read samples in `deepstream-8.0/` before modifying code/docs. Confirmed our RTSP approach matches `deepstream_sink_bin.c` (UDP‑wrap with `rtph264pay` → `udpsink`, RTSP `udpsrc name=pay0`).
@@ -9,16 +9,23 @@ Current status
 - /test works (software JPEG RTP).
 - Post‑demux matches DeepStream sample pattern: per‑stream encode + RTP/UDP egress; RTSP factories wrap from UDP (no intervideo).
 - OSD overlays enabled; correct order: convert → RGBA → OSD → convert → NV12 → NVENC.
- - Optional REST wrapper added: can auto‑add sample sources at runtime (nvmultiurisrcbin REST, port 9010).
+- We post to nvmultiurisrcbin REST to add sources; next, we’ll wrap this behind a simple `GET /add_demo_stream` in our service.
 
 Open items (execution plan)
-1) Verify /s0..s1 playback via UDP‑wrapped RTSP
-   - Branch (per stream): queue (leaky, 200ms) → nvvidconv → caps NVMM RGBA → nvosdbin → nvvidconv → caps NVMM NV12 → nvv4l2h264enc → h264parse → rtph264pay → udpsink:127.0.0.1:(BASE_UDP_PORT+i)
-   - RTSP factory: `( udpsrc port=BASE_UDP_PORT+i buffer-size=524288 caps="application/x-rtp, media=video, clock-rate=90000, encoding-name=H264, payload=96" name=pay0 )`
-   - Mirrors `deepstream_sink_bin.c` UDP-wrap approach.
-2) Keep C tiny and readable
-   - Parse only `pipeline.txt`, build/link branches, start RTSP.
-   - Minimal envs: `STREAMS`, `RTSP_PORT`, `BASE_UDP_PORT`, `USE_OSD`. Optional: `AUTO_ADD_SAMPLES`, `AUTO_ADD_WAIT_MS`, `SAMPLE_URI`.
+1) Implement control API (single happy path)
+   - Add tiny HTTP server (e.g., on `:8080`) inside `rtsp_server.c` with `GET /add_demo_stream`.
+   - Handler flow:
+     - Determine next index N; request `demux` pad `src_N`.
+     - Build per‑stream branch and link to UDP egress at `BASE_UDP_PORT+N`.
+     - Mount RTSP factory at `/sN` wrapping UDP (udpsrc name=pay0).
+     - POST to nvmultiurisrcbin REST (port 9010) to add `SAMPLE_URI`.
+     - Respond `200` with `{ "path": "/sN", "url": "rtsp://<host>:<rtsp_port>/sN" }`.
+   - Startup behavior: set `STREAMS=0`; only `/test` is mounted.
+2) Verify end‑to‑end
+   - Start empty; curl `/add_demo_stream`; receive JSON; play returned URL via ffplay.
+3) Keep C tiny and readable
+   - Single config file; explicit pad linking; narrow API surface.
+   - Minimal envs: `RTSP_PORT`, `BASE_UDP_PORT`, `USE_OSD`, `SAMPLE_URI` (no startup count; service always starts empty).
 3) Mac testability
    - Validate with ffplay over TCP from macOS; `/s0..s2` must play.
 
@@ -49,7 +56,7 @@ Scope: Keep STREAMS=2 for now. Do not implement yet; capture changes to apply be
 
 6) Batch and pre-demux alignment
 - Require `pipeline.txt max-batch-size == STREAMS`; confirm framerate/resize are set pre-demux to keep NVENC input uniform.
- - For zero‑source start + auto‑add: leave out `uri-list` and set `max-batch-size` to your expected maximum to avoid editing later.
+- For zero‑source start + auto‑add: leave out `uri-list` and set `max-batch-size` to your expected maximum to avoid editing later.
 
 7) Logging and observability
 - Keep branch link logs. Optionally add lightweight per-branch FPS counters (info-level only) for soak testing.

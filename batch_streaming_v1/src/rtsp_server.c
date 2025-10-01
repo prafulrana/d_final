@@ -46,7 +46,7 @@ static gchar *read_file_to_string(const gchar *path) {
 
 static gboolean parse_args(int argc, char *argv[], AppConfig *cfg) {
   // Defaults
-  cfg->streams = 3; // target simple 3-stream output
+  cfg->streams = 0; // start with no /sN endpoints; add via control API
   cfg->rtsp_port = 8554;
   cfg->pipeline_txt = g_strdup("/opt/nvidia/deepstream/deepstream-8.0/pipeline.txt");
   cfg->use_osd = TRUE;
@@ -60,12 +60,10 @@ static gboolean parse_args(int argc, char *argv[], AppConfig *cfg) {
     g_free(cfg->pipeline_txt);
     cfg->pipeline_txt = g_strdup(argv[1]);
   }
-  if (argc >= 3) cfg->streams = (guint) g_ascii_strtoull(argv[2], NULL, 10);
-  if (argc >= 4) cfg->rtsp_port = (guint) g_ascii_strtoull(argv[3], NULL, 10);
+  if (argc >= 3) cfg->rtsp_port = (guint) g_ascii_strtoull(argv[2], NULL, 10);
 
   // Environment overrides
   const gchar *env;
-  if ((env = g_getenv("STREAMS"))) cfg->streams = (guint) g_ascii_strtoull(env, NULL, 10);
   if ((env = g_getenv("RTSP_PORT"))) cfg->rtsp_port = (guint) g_ascii_strtoull(env, NULL, 10);
   if ((env = g_getenv("USE_OSD"))) cfg->use_osd = (gboolean)(g_ascii_strcasecmp(env, "0") != 0);
   if ((env = g_getenv("BASE_UDP_PORT"))) cfg->base_udp_port = (guint) g_ascii_strtoull(env, NULL, 10);

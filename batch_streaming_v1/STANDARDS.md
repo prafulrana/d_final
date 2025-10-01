@@ -7,14 +7,14 @@
   - `samples/configs/deepstream-app*` (`rtsp-port`, sink settings, demux usage)
 - Do not introduce new approaches that diverge from these patterns unless documented rationale is added here.
 
-## How To Run
+## How To Run (Single Happy Path)
 - Requirements: Docker with NVIDIA runtime (`--gpus all`), access to nvcr.io.
 - Build: `./build.sh`
-- Run: `./run.sh` (defaults to 2 outputs: `/s0`, `/s1`)
-- Quick test from macOS:
-  - `/test` (sanity): `ffplay -rtsp_transport tcp rtsp://<host>:8554/test`
-  - `/s0`: `ffplay -rtsp_transport tcp rtsp://<host>:8554/s0`
-  - `/s1`: `ffplay -rtsp_transport tcp rtsp://<host>:8554/s1`
+- Start service EMPTY (only `/test` present): `./run.sh`
+- Add one demo stream (control API): `curl http://localhost:8080/add_demo_stream`
+  - Response (example): `{ "path": "/s0", "url": "rtsp://<host>:8554/s0" }`
+- Play from macOS: `ffplay -rtsp_transport tcp rtsp://<host>:8554/s0`
+- Sanity any time: `ffplay -rtsp_transport tcp rtsp://<host>:8554/test`
 
 ## Configuration Strategy
 - Single config file: `pipeline.txt` defines all pre‑demux behavior and sources.
@@ -24,16 +24,14 @@
  - OSD overlays are enabled by default (`USE_OSD=1`), matching DeepStream samples. Disable only for scale testing.
  - Queue per branch is tuned for low latency: `leaky=2` (downstream) and `max-size-time=200ms`.
  - RTSP factories wrap UDP using `udpsrc port=<p> buffer-size=524288 name=pay0` with H264 RTP caps.
+ - Control API: service starts with no `/sN`. Hitting `GET /add_demo_stream` auto‑adds a sample source and mounts the next `/sN`, returning its RTSP URL as JSON.
  - Optional REST wrapper: set `AUTO_ADD_SAMPLES=N` to add N sample sources at runtime via nvmultiurisrcbin REST (port 9010). For a zero‑source start, omit `uri-list` in `pipeline.txt` and ensure `max-batch-size >= N`.
 
 ## Minimal Env Vars
-- `STREAMS` — number of `/sN` endpoints to expose (default 2)
 - `RTSP_PORT` — RTSP TCP port (default 8554; auto‑increments if busy)
 - `BASE_UDP_PORT` — starting UDP port for per‑stream RTP egress (default 5000)
- - `USE_OSD` — enable per‑stream overlays (default 1)
- - `AUTO_ADD_SAMPLES` — if >0, auto‑add this many sample streams via REST (default 0)
- - `AUTO_ADD_WAIT_MS` — initial delay before auto‑add posts (default 1000 ms)
- - `SAMPLE_URI` — URI used when auto‑adding (default DS sample 1080p H.264)
+- `USE_OSD` — enable per‑stream overlays (default 1)
+- `SAMPLE_URI` — demo URI used by `add_demo_stream` (default DS sample 1080p H.264)
 
 ## Code Cleanliness
 - Favor config strings (pipeline, encoder choices) over code. Keep C small.
@@ -45,7 +43,7 @@
 ## Troubleshooting
 - `/test` works but `/sN` returns 503:
   - Confirm logs show: `Linked demux src_N to UDP egress port 5000+N` and `RTSP mounted ... (udp-wrap H264 RTP @127.0.0.1:5000+N)`.
-  - Ensure `pipeline.txt` has at least N+1 URIs and `max-batch-size` adequate.
+  - Ensure `pipeline.txt` `max-batch-size` >= number of added streams.
   - Rebuild and rerun if you changed `pipeline.txt`.
 - Port conflicts:
   - RTSP retries 8554..+9. Use the logged port in your ffplay URL.
