@@ -35,6 +35,11 @@
 - `SAMPLE_URI` — demo URI used by `add_demo_stream` (default DS sample 1080p H.264)
 - `PUBLIC_HOST` — host/IP to return in RTSP URLs (default 10.243.249.215 via run.sh; override as needed)
 
+## Engine Caching
+- The TensorRT engine is serialized to the host at `./models/...engine` (mounted into the container at `/models`).
+- First run builds the engine (batch-64) and subsequent runs reuse it automatically.
+- To force a rebuild, delete the engine file and rerun `./run.sh`.
+
 ## Code Cleanliness
 - Favor config strings (pipeline, encoder choices) over code. Keep C small.
 - Do not mix unrelated concerns; post‑demux logic only.

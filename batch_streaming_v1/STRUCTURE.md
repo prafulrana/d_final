@@ -3,6 +3,7 @@
 - Dockerfile — Builds the runtime image (DeepStream 8.0 base, compiles C server).
 - build.sh — One‑shot Docker image build helper.
 - run.sh — Runs the container and passes env vars (`STREAMS`, `RTSP_PORT`, `BASE_UDP_PORT`, `USE_OSD`).
+  - Also mounts `./models` on host to `/models` in the container to persist the TensorRT engine across runs.
 - README.md — Architecture overview and usage.
 - plan.md — Current implementation plan and next steps.
 - STANDARDS.md — How to run/test; code cleanliness expectations.

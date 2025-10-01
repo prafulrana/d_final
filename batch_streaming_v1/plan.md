@@ -26,6 +26,9 @@ Open items (execution plan)
 3) Keep C tiny and readable
    - Single config file; explicit pad linking; narrow API surface.
    - Minimal envs: `RTSP_PORT`, `BASE_UDP_PORT`, `USE_OSD`, `SAMPLE_URI`, `PUBLIC_HOST` (no startup count; service always starts empty).
+4) Engine caching — DONE
+   - Persist engine to host via `/models` mount (run.sh mounts `./models` to `/models`).
+   - PGIE config points `model-engine-file` to `/models/trafficcamnet_b64_gpu0_fp16.engine`.
 3) Mac testability
    - Validate with ffplay over TCP from macOS; `/s0..s2` must play.
 
