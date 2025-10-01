@@ -97,6 +97,7 @@ static gboolean g_use_osd_glb = TRUE;
 static GMutex g_state_lock;
 static guint g_ctrl_port = 0;
 static const gchar *g_public_host = NULL;
+static const guint k_max_streams = 64; // hard capacity
 
 // --- Minimal HTTP POST helper to nvmultiurisrcbin REST (localhost:9010)
 static gboolean http_post_localhost_port(const char *port_str, const char *path, const char *json, size_t json_len) {
@@ -326,6 +327,16 @@ static gpointer control_http_thread(gpointer data) {
     }
     guint index;
     g_mutex_lock(&g_state_lock);
+    if (g_next_index >= k_max_streams) {
+      g_mutex_unlock(&g_state_lock);
+      const char *json = "{\n  \"error\": \"capacity_exceeded\",\n  \"max\": 64\n}\n";
+      gchar *hdr = g_strdup_printf("HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n", strlen(json));
+      send(c, hdr, strlen(hdr), 0);
+      send(c, json, strlen(json), 0);
+      g_free(hdr);
+      close(c);
+      continue;
+    }
     index = g_next_index++;
     g_mutex_unlock(&g_state_lock);
 

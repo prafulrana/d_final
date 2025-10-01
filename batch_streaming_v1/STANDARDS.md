@@ -13,6 +13,7 @@
 - Start service EMPTY (only `/test` present): `./run.sh`
 - Add one demo stream (control API): `curl http://localhost:8080/add_demo_stream`
   - Response (example): `{ "path": "/s0", "url": "rtsp://<host>:8554/s0" }`
+  - Repeat to add `/s1`, `/s2`, ... up to capacity (64).
 - Play from macOS: `ffplay -rtsp_transport tcp rtsp://<host>:8554/s0`
 - Sanity any time: `ffplay -rtsp_transport tcp rtsp://<host>:8554/test`
 
@@ -24,7 +25,7 @@
  - OSD overlays are enabled by default (`USE_OSD=1`), matching DeepStream samples. Disable only for scale testing.
  - Queue per branch is tuned for low latency: `leaky=2` (downstream) and `max-size-time=200ms`.
  - RTSP factories wrap UDP using `udpsrc port=<p> buffer-size=524288 name=pay0` with H264 RTP caps.
- - Control API: service starts with no `/sN`. Hitting `GET /add_demo_stream` auto‑adds a sample source and mounts the next `/sN`, returning its RTSP URL as JSON.
+ - Control API: service starts with no `/sN`. Hitting `GET /add_demo_stream` auto‑adds a sample source and mounts the next `/sN`, returning its RTSP URL as JSON. Capacity is fixed at 64; requests beyond that return HTTP 429 with `{ "error": "capacity_exceeded", "max": 64 }`.
  - Optional REST wrapper: set `AUTO_ADD_SAMPLES=N` to add N sample sources at runtime via nvmultiurisrcbin REST (port 9010). For a zero‑source start, omit `uri-list` in `pipeline.txt` and ensure `max-batch-size >= N`.
 
 ## Minimal Env Vars
@@ -44,8 +45,8 @@
 ## Troubleshooting
 - `/test` works but `/sN` returns 503:
   - Confirm logs show: `Linked demux src_N to UDP egress port 5000+N` and `RTSP mounted ... (udp-wrap H264 RTP @127.0.0.1:5000+N)`.
-  - Ensure both `pipeline.txt` `max-batch-size` AND `pgie.txt` `batch-size` are >= number of added streams. If not, bump them (e.g., 8 or 64), rebuild, and rerun.
-  - Rebuild and rerun if you changed `pipeline.txt`.
+  - Ensure both `pipeline.txt` `max-batch-size` AND `pgie.txt` `batch-size` are >= number of added streams. Defaults are 64. If you change them, rebuild and rerun.
+  - First run after bumping PGIE batch-size builds a new engine; allow ~1–2 minutes for b64.
 - Port conflicts:
   - RTSP retries 8554..+9. Use the logged port in your ffplay URL.
   - DeepStream’s REST (9000) may already be bound; it doesn’t affect RTSP.

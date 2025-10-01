@@ -19,7 +19,7 @@ Open items (execution plan)
      - Build per‑stream branch and link to UDP egress at `BASE_UDP_PORT+N`.
      - Mount RTSP factory at `/sN` wrapping UDP (udpsrc name=pay0).
      - POST to nvmultiurisrcbin REST (port 9010) to add `SAMPLE_URI`.
-     - Respond `200` with `{ "path": "/sN", "url": "rtsp://<PUBLIC_HOST>:<rtsp_port>/sN" }`.
+     - Respond `200` with `{ "path": "/sN", "url": "rtsp://<PUBLIC_HOST>:<rtsp_port>/sN" }`. If N reaches 64, return HTTP 429 `{ "error": "capacity_exceeded", "max": 64 }`.
    - Startup behavior: set `STREAMS=0`; only `/test` is mounted.
 2) Verify end‑to‑end
    - Start empty; curl `/add_demo_stream`; receive JSON; play returned URL via ffplay.
@@ -35,18 +35,17 @@ Notes
 
 ---
 
-Next Phase: Scale to 64 (readiness checklist)
+ Next Phase: Scale to 64 (readiness done)
 
 Scope: Keep STREAMS=2 for now. Do not implement yet; capture changes to apply before scaling tests.
 
-1) RTSP parity with DeepStream samples
-- DONE: `udpsrc buffer-size` used; no `address` in RTSP factory launch.
+1) RTSP parity with DeepStream samples — DONE
+   - `udpsrc buffer-size` used; no `address` in RTSP factory launch.
 
 2) Per-branch queue tuning
 - DONE: `queue leaky=2`, `max-size-time=200ms`, buffers/bytes unset (0).
 
-3) Default OSD off for scale
-- Consider flipping `USE_OSD=0` only when scaling soak tests; current default remains on for correctness.
+3) Default OSD stays ON for correctness; consider disabling only for heavy scale soak tests.
 
 4) NVENC tuning and bitrate
 - Keep `insert-sps-pps=1`, `idrinterval/iframeinterval` aligned to framerate. Consider lower per-stream bitrate (e.g., 2–3 Mbps @720p30) with a single env for consistency.
@@ -54,9 +53,8 @@ Scope: Keep STREAMS=2 for now. Do not implement yet; capture changes to apply be
 5) UDP ports configurability
 - DONE: `BASE_UDP_PORT` env present; ensure `[BASE_UDP_PORT .. +STREAMS-1]` is free.
 
-6) Batch and pre-demux alignment
-- Require `pipeline.txt max-batch-size == STREAMS`; confirm framerate/resize are set pre-demux to keep NVENC input uniform.
-- For zero‑source start + auto‑add: leave out `uri-list` and set `max-batch-size` to your expected maximum to avoid editing later.
+6) Batch and pre-demux alignment — DONE
+   - `pipeline.txt max-batch-size=64`; `pgie.txt batch-size=64` with b64 engine path. Zero‑source start maintained.
 
 7) Logging and observability
 - Keep branch link logs. Optionally add lightweight per-branch FPS counters (info-level only) for soak testing.
