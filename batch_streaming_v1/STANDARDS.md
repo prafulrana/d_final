@@ -15,7 +15,6 @@
   - `/test` (sanity): `ffplay -rtsp_transport tcp rtsp://<host>:8554/test`
   - `/s0`: `ffplay -rtsp_transport tcp rtsp://<host>:8554/s0`
   - `/s1`: `ffplay -rtsp_transport tcp rtsp://<host>:8554/s1`
-  - `/s2`: `ffplay -rtsp_transport tcp rtsp://<host>:8554/s2`
 
 ## Configuration Strategy
 - Single config file: `pipeline.txt` defines all pre‑demux behavior and sources.
