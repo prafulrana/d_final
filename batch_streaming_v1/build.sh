@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "Building batch streaming (4 streams, batch inference)..."
+echo "Building batch streaming (C RTSP server, config-driven pipeline)..."
 docker build -t batch_streaming:latest .
 echo ""
 echo "✓ Build complete!"

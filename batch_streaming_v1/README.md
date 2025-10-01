@@ -25,15 +25,16 @@
       │  Stream 0     │             │  Stream 1     │
       │  • queue      │             │  • queue      │
       │  • nvosdbin   │             │  • nvosdbin   │
-      │  • encode     │             │  • encode     │
-      │  • UDP:5600   │             │  • UDP:5601   │
+      │  • NVENC H264 │             │  • NVENC H264 │
+      │  • RTP/UDP    │             │  • RTP/UDP    │
       └───────┬───────┘             └───────┬───────┘
               │                             │
               └─────────────┬───────────────┘
                             │
                             ▼
       ┌─────────────────────────────────────────┐
-      │  Python RTSP Server (GstRtspServer)     │
+      │  C RTSP Server (GstRtspServer)          │
+      │  • Wraps UDP (udpsrc pay0, H264 RTP)    │
       │  • rtsp://IP:8554/s0                    │
       │  • rtsp://IP:8554/s1                    │
       └─────────────────────────────────────────┘
@@ -45,12 +46,12 @@
 - **Batch Inference**: 30x efficiency - AI runs once for all 30 streams
 - **Per-Stream OSD**: Detection overlays applied post-demux (no blinking)
 - **Dynamic Capable**: nvmultiurisrcbin supports runtime stream add/remove
-- **Minimal Code**: Pipeline in text file, Python wrapper just adds RTSP
+- **Minimal Code**: Pre-demux via config string; C post-demux + RTSP only
 
 ## Files
 
-- `rtsp_server.py` - Python RTSP wrapper (68 lines)
-- `pipeline.txt` - GStreamer pipeline definition
+- `src/rtsp_server.c` - Minimal C RTSP wrapper (builds post-demux branches)
+- `pipeline.txt` - Optional pre-demux pipeline (compatibility)
 - `pgie.txt` - TensorRT inference configuration
 - `Dockerfile` - Container image
 - `build.sh` - Build script
@@ -84,24 +85,12 @@ ffplay -rtsp_transport tcp rtsp://10.243.223.217:8554/s1
 - **Throughput**: 30 streams @ 30fps = 900 FPS total
 - **Memory**: Shared batch buffers, zero-copy demux
 
-## Scaling
+## Configuration
 
-### Add More Output Streams
-Edit `pipeline.txt`:
-```gstreamer
-demux.src_2 ! queue ! ... ! udpsink port=5602
-demux.src_3 ! queue ! ... ! udpsink port=5603
-```
-
-Update `rtsp_server.py`:
-```python
-server = DeepStreamRTSPServer(pipeline_desc, num_streams=4)
-```
-
-### Increase Batch Size
-1. Edit `pgie.txt`: `batch-size=60`
-2. Edit `pipeline.txt`: `max-batch-size=60`, add 30 more URIs
-3. Rebuild TensorRT engine (automatic on first run)
+- Single config file: `pipeline.txt` (pre-demux pipeline with `nvstreamdemux name=demux`). One line only; parsed by `gst_parse_launch`.
+- Minimal envs:
+  - `STREAMS` — number of `/sN` endpoints (default 3)
+  - `RTSP_PORT` — RTSP TCP port (default 8554)
 
 ## Future Enhancements
 
@@ -136,5 +125,5 @@ server = DeepStreamRTSPServer(pipeline_desc, num_streams=4)
 ---
 
 **Date:** 2025-09-30
-**Status:** ✅ Production Ready
-**Version:** 1.0
+**Status:** ✅ NVENC + UDP-wrapped RTSP (C server)
+**Version:** 1.2
