@@ -44,7 +44,7 @@
 ## Troubleshooting
 - `/test` works but `/sN` returns 503:
   - Confirm logs show: `Linked demux src_N to UDP egress port 5000+N` and `RTSP mounted ... (udp-wrap H264 RTP @127.0.0.1:5000+N)`.
-  - Ensure `pipeline.txt` `max-batch-size` >= number of added streams.
+  - Ensure both `pipeline.txt` `max-batch-size` AND `pgie.txt` `batch-size` are >= number of added streams. If not, bump them (e.g., 8 or 64), rebuild, and rerun.
   - Rebuild and rerun if you changed `pipeline.txt`.
 - Port conflicts:
   - RTSP retries 8554..+9. Use the logged port in your ffplay URL.
