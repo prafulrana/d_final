@@ -80,12 +80,12 @@ static void cleanup_config(AppConfig *cfg) {
 }
 
 // --- Minimal HTTP POST helper to nvmultiurisrcbin REST (localhost:9010)
-static gboolean http_post_localhost_9010(const char *path, const char *json, size_t json_len) {
+static gboolean http_post_localhost_port(const char *port_str, const char *path, const char *json, size_t json_len) {
   struct addrinfo hints; memset(&hints, 0, sizeof(hints));
   hints.ai_family = AF_UNSPEC;
   hints.ai_socktype = SOCK_STREAM;
   struct addrinfo *res = NULL;
-  int err = getaddrinfo("127.0.0.1", "9010", &hints, &res);
+  int err = getaddrinfo("127.0.0.1", port_str, &hints, &res);
   if (err != 0 || !res) {
     g_printerr("REST: getaddrinfo failed: %s\n", gai_strerror(err));
     if (res) freeaddrinfo(res);
@@ -103,11 +103,11 @@ static gboolean http_post_localhost_9010(const char *path, const char *json, siz
 
   gchar *req = g_strdup_printf(
     "POST %s HTTP/1.1\r\n"
-    "Host: 127.0.0.1:9010\r\n"
+    "Host: 127.0.0.1:%s\r\n"
     "Content-Type: application/json\r\n"
     "Content-Length: %zu\r\n"
     "Connection: close\r\n\r\n",
-    path, json_len);
+    path, port_str, json_len);
 
   ssize_t n = send(s, req, strlen(req), 0);
   g_free(req);
@@ -120,6 +120,14 @@ static gboolean http_post_localhost_9010(const char *path, const char *json, siz
   (void)recv(s, buf, sizeof(buf), 0); // best-effort read and ignore
   close(s);
   return TRUE;
+}
+
+static gboolean http_post_localhost_try(const char *path, const char *json, size_t json_len) {
+  // Try default ports used by DeepStream REST samples
+  if (http_post_localhost_port("9010", path, json, json_len)) return TRUE;
+  if (http_post_localhost_port("9000", path, json, json_len)) return TRUE;
+  g_printerr("REST: failed to post on 9010 and 9000\n");
+  return FALSE;
 }
 
 typedef struct {
@@ -148,7 +156,7 @@ static gpointer auto_add_thread(gpointer data) {
       "  \"headers\": { \"source\": \"app\" }\n"
       "}\n",
       i, ctx->sample_uri);
-    gboolean ok = http_post_localhost_9010("/api/v1/stream/add", body, strlen(body));
+    gboolean ok = http_post_localhost_try("/api/v1/stream/add", body, strlen(body));
     g_print("REST: add sample %u -> %s\n", i, ok ? "OK" : "FAIL");
     g_free(body);
     g_usleep(300 * 1000); // slight gap between additions
@@ -183,6 +191,136 @@ static void on_bus_message(GstBus *bus, GstMessage *msg, gpointer user_data) {
     default:
       break;
   }
+}
+
+static gboolean add_branch_and_mount(guint index, gchar **out_path, gchar **out_url) {
+  g_mutex_lock(&g_state_lock);
+  if (!g_pipeline || !g_demux || !g_pre_bin || !g_rtsp_server) {
+    g_mutex_unlock(&g_state_lock);
+    return FALSE;
+  }
+  // Elements
+  GstElement *queue = gst_element_factory_make("queue", NULL);
+  GstElement *conv_pre = gst_element_factory_make("nvvideoconvert", NULL);
+  GstElement *caps_pre = gst_element_factory_make("capsfilter", NULL);
+  GstElement *osd = g_use_osd_glb ? gst_element_factory_make("nvosdbin", NULL) : NULL;
+  GstElement *conv_post = gst_element_factory_make("nvvideoconvert", NULL);
+  GstElement *caps_post = gst_element_factory_make("capsfilter", NULL);
+  GstElement *enc = gst_element_factory_make("nvv4l2h264enc", NULL);
+  GstElement *parse = gst_element_factory_make("h264parse", NULL);
+  GstElement *pay = gst_element_factory_make("rtph264pay", NULL);
+  GstElement *udp = gst_element_factory_make("udpsink", NULL);
+  if (!queue || !conv_pre || !caps_pre || !conv_post || !caps_post || !enc || !parse || !pay || !udp || (g_use_osd_glb && !osd)) {
+    g_mutex_unlock(&g_state_lock);
+    return FALSE;
+  }
+  g_object_set(queue, "leaky", 2, "max-size-time", (guint64)200000000, "max-size-buffers", 0, "max-size-bytes", 0, NULL);
+  GstCaps *caps_rgba = gst_caps_from_string("video/x-raw(memory:NVMM),format=RGBA");
+  g_object_set(caps_pre, "caps", caps_rgba, NULL);
+  gst_caps_unref(caps_rgba);
+  GstCaps *caps_nv12 = gst_caps_from_string("video/x-raw(memory:NVMM),format=NV12,framerate=30/1");
+  g_object_set(caps_post, "caps", caps_nv12, NULL);
+  gst_caps_unref(caps_nv12);
+  g_object_set(enc, "insert-sps-pps", 1, "iframeinterval", 30, "idrinterval", 30, "bitrate", 3000000, NULL);
+  g_object_set(pay, "config-interval", 1, "pt", 96, NULL);
+  guint port = g_base_udp_port_glb + index;
+  g_object_set(udp, "host", "127.0.0.1", "port", port, "sync", FALSE, "async", FALSE, NULL);
+
+  gst_bin_add_many(GST_BIN(g_pre_bin), queue, conv_pre, caps_pre, conv_post, caps_post, enc, parse, pay, udp, NULL);
+  if (g_use_osd_glb) gst_bin_add(GST_BIN(g_pre_bin), osd);
+  gboolean ok;
+  if (g_use_osd_glb) ok = gst_element_link_many(queue, conv_pre, caps_pre, osd, conv_post, caps_post, enc, parse, pay, udp, NULL);
+  else ok = gst_element_link_many(queue, conv_pre, caps_pre, conv_post, caps_post, enc, parse, pay, udp, NULL);
+  if (!ok) { g_mutex_unlock(&g_state_lock); return FALSE; }
+
+  gchar *padname = g_strdup_printf("src_%u", index);
+  GstPad *demux_src = gst_element_request_pad_simple(g_demux, padname);
+  g_free(padname);
+  if (!demux_src) { g_mutex_unlock(&g_state_lock); return FALSE; }
+  GstPad *queue_sink = gst_element_get_static_pad(queue, "sink");
+  if (!queue_sink) { gst_object_unref(demux_src); g_mutex_unlock(&g_state_lock); return FALSE; }
+  if (gst_pad_link(demux_src, queue_sink) != GST_PAD_LINK_OK) {
+    gst_object_unref(demux_src); gst_object_unref(queue_sink); g_mutex_unlock(&g_state_lock); return FALSE;
+  }
+  gst_object_unref(demux_src); gst_object_unref(queue_sink);
+
+  // Sync state with parent for all new elements
+  GstElement *els[] = { queue, conv_pre, caps_pre, osd, conv_post, caps_post, enc, parse, pay, udp, NULL };
+  for (int i = 0; els[i]; ++i) gst_element_sync_state_with_parent(els[i]);
+
+  g_print("Linked demux src_%u to UDP egress port %u (dynamic)\n", index, port);
+
+  // Mount RTSP factory for /sN
+  gchar *path = g_strdup_printf("/s%u", index);
+  gchar *launch = g_strdup_printf(
+    "( udpsrc port=%u buffer-size=%lu caps=\"application/x-rtp, media=video, clock-rate=90000, encoding-name=H264, payload=96\" name=pay0 )",
+    port, (unsigned long)(524288UL));
+  GstRTSPMountPoints *mounts = gst_rtsp_server_get_mount_points(g_rtsp_server);
+  GstRTSPMediaFactory *factory = gst_rtsp_media_factory_new();
+  gst_rtsp_media_factory_set_launch(factory, launch);
+  gst_rtsp_media_factory_set_shared(factory, TRUE);
+  gst_rtsp_media_factory_set_latency(factory, 100);
+  gst_rtsp_mount_points_add_factory(mounts, path, factory);
+  g_object_unref(mounts);
+  g_print("RTSP mounted: rtsp://127.0.0.1:%u%s (udp-wrap H264 RTP @127.0.0.1:%u)\n", g_rtsp_port, path, port);
+
+  if (out_path) *out_path = g_strdup(path);
+  if (out_url) {
+    *out_url = g_strdup_printf("rtsp://127.0.0.1:%u%s", g_rtsp_port, path);
+  }
+  g_free(path); g_free(launch);
+  g_mutex_unlock(&g_state_lock);
+  return TRUE;
+}
+
+static gpointer control_http_thread(gpointer data) {
+  (void)data;
+  int s = socket(AF_INET, SOCK_STREAM, 0);
+  if (s < 0) { g_printerr("CTRL: socket create failed\n"); return NULL; }
+  int opt = 1; setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+  struct sockaddr_in addr; memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET; addr.sin_addr.s_addr = htonl(INADDR_ANY); addr.sin_port = htons(8080);
+  if (bind(s, (struct sockaddr*)&addr, sizeof(addr)) != 0) { g_printerr("CTRL: bind 8080 failed\n"); close(s); return NULL; }
+  if (listen(s, 16) != 0) { g_printerr("CTRL: listen failed\n"); close(s); return NULL; }
+  g_print("Control API listening on http://0.0.0.0:8080\n");
+  for (;;) {
+    int c = accept(s, NULL, NULL);
+    if (c < 0) continue;
+    char buf[1024]; ssize_t n = recv(c, buf, sizeof(buf)-1, 0);
+    if (n <= 0) { close(c); continue; }
+    buf[n] = '\0';
+    gboolean is_add = (g_str_has_prefix(buf, "GET /add_demo_stream ") || g_str_has_prefix(buf, "GET /add_demo_stream?"));
+    if (!is_add) {
+      const char *resp = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
+      send(c, resp, strlen(resp), 0);
+      close(c); continue;
+    }
+    guint index;
+    g_mutex_lock(&g_state_lock);
+    index = g_next_index++;
+    g_mutex_unlock(&g_state_lock);
+
+    gchar *path = NULL; gchar *url = NULL;
+    gboolean ok = add_branch_and_mount(index, &path, &url);
+    if (ok) {
+      // Trigger source add via REST
+      gchar *body = g_strdup_printf(
+        "{\n  \"key\": \"sensor\",\n  \"value\": {\n    \"camera_id\": \"api_%u\",\n    \"camera_url\": \"file:///opt/nvidia/deepstream/deepstream/samples/streams/sample_1080p_h264.mp4\",\n    \"change\": \"camera_add\"\n  },\n  \"headers\": { \"source\": \"app\" }\n}\n", index);
+      (void)http_post_localhost_try("/api/v1/stream/add", body, strlen(body));
+      g_free(body);
+      gchar *json = g_strdup_printf("{\n  \"path\": \"%s\",\n  \"url\": \"%s\"\n}\n", path, url);
+      gchar *hdr = g_strdup_printf("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n", strlen(json));
+      send(c, hdr, strlen(hdr), 0);
+      send(c, json, strlen(json), 0);
+      g_free(hdr); g_free(json);
+    } else {
+      const char *resp = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nContent-Length: 6\r\nConnection: close\r\n\r\nError\n";
+      send(c, resp, strlen(resp), 0);
+    }
+    g_free(path); g_free(url);
+    close(c);
+  }
+  return NULL;
 }
 
 static gboolean build_full_pipeline_and_server(const AppConfig *cfg, GstPipeline **out_pipeline, GstRTSPServer **out_server) {
@@ -253,6 +391,17 @@ static gboolean build_full_pipeline_and_server(const AppConfig *cfg, GstPipeline
     gboolean ok = TRUE;
     if (cfg->use_osd) ok = gst_element_link_many(queue, conv_pre, caps_pre, osd, conv_post, caps_post, enc, parse, pay, udp, NULL);
     else ok = gst_element_link_many(queue, conv_pre, caps_pre, conv_post, caps_post, enc, parse, pay, udp, NULL);
+// --- Global state for dynamic add + control API
+static GstPipeline *g_pipeline = NULL;
+static GstElement  *g_pre_bin = NULL;
+static GstElement  *g_demux = NULL;
+static GstRTSPServer *g_rtsp_server = NULL;
+static guint g_rtsp_port = 0;
+static guint g_next_index = 0;
+static guint g_base_udp_port_glb = 5000;
+static gboolean g_use_osd_glb = TRUE;
+static GMutex g_state_lock;
+
     if (!ok) { g_printerr("Link failed for branch %u (pre/osd/post/enc/rtp/udp)\n", i); gst_object_unref(demux); gst_object_unref(pipeline); return FALSE; }
 
     // Explicitly request and link nvstreamdemux src_%u -> queue
@@ -364,6 +513,21 @@ int main(int argc, char *argv[]) {
 
   // Start pipeline
   gst_element_set_state(GST_ELEMENT(pipeline), GST_STATE_PLAYING);
+  // Stash globals for dynamic add
+  g_mutex_init(&g_state_lock);
+  g_pipeline = pipeline;
+  g_rtsp_server = server;
+  g_rtsp_port = cfg.rtsp_port; // will be updated below from server service
+  g_use_osd_glb = cfg.use_osd;
+  g_base_udp_port_glb = cfg.base_udp_port;
+  g_demux = gst_bin_get_by_name(GST_BIN(pipeline), "demux");
+  g_pre_bin = GST_ELEMENT(gst_element_get_parent(g_demux));
+  g_next_index = 0;
+  // Query actual port from server service setting
+  const gchar *service = gst_rtsp_server_get_service(server);
+  if (service) g_rtsp_port = (guint) g_ascii_strtoull(service, NULL, 10);
+  // Start minimal control API
+  (void)g_thread_new("ctrl_http", control_http_thread, NULL);
   // Optional: auto-add sample sources via REST
   if (cfg.auto_add_samples > 0) {
     AutoAddCtx *ctx = g_new0(AutoAddCtx, 1);
