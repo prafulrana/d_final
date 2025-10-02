@@ -102,7 +102,9 @@ ffplay -rtsp_transport tcp rtsp://10.243.223.217:8554/s1
 - `SW_MAX` — Number of software-encoded streams allowed (default 56)
 - `MAX_STREAMS` — Override total capacity (default `HW_THRESHOLD + SW_MAX`)
 - `X264_THREADS` — Threads per x264 encoder (default ~half cores, capped at 4)
-- `OUTPUT_FPS` — Throttle SW-encoded output to this fps (default 30 via videorate)
+ 
+Output rate
+- RTSP pacing is real-time via sink clock: we set `udpsink sync=true` so encoded output does not run faster than realtime (e.g., 30 fps sources play at 30 fps).
 
 ## Future Enhancements
 

@@ -23,6 +23,7 @@ Open items (execution plan)
    - Startup behavior: service starts empty; only `/test` is mounted.
 2) Verify end‑to‑end
    - Start empty; curl `/add_demo_stream`; receive JSON; play returned URL via ffplay.
+   - Output pacing: ensure UDP sink uses clock sync (`udpsink sync=true`) so single-stream startup does not run > realtime.
 3) Keep C tiny and readable
    - Single config file; explicit pad linking; narrow API surface.
    - Minimal envs: `RTSP_PORT`, `BASE_UDP_PORT`, `SAMPLE_URI`, `PUBLIC_HOST` (no startup count; service always starts empty).
@@ -51,18 +52,20 @@ Scope: Begin with 2–3 dynamic adds via API; scale gradually.
    - `udpsrc buffer-size` used; no `address` in RTSP factory launch.
 
 2) Per-branch queue tuning
-- DONE: `queue leaky=2`, `max-size-time=200ms`, buffers/bytes unset (0).
+- DONE: `queue leaky=0`, `max-size-time=200ms`, buffers/bytes unset (0). No frame drops.
 
 3) OSD stays ON for correctness.
 
-4) NVENC tuning and bitrate
-- Keep `insert-sps-pps=1`, `idrinterval/iframeinterval` aligned to framerate. Consider lower per-stream bitrate (e.g., 2–3 Mbps @720p30) with a single env for consistency.
+4) NVENC/x264 tuning and pacing
+- Keep `insert-sps-pps=1`, `idrinterval/iframeinterval=30`.
+- x264: `key-int-max=30`, `tune=zerolatency`, `ultrafast`, threads default to 2 (override `X264_THREADS`).
+- Pacing is handled by sink clock (`udpsink sync=true`); no videorate needed.
 
 5) UDP ports configurability
 - DONE: `BASE_UDP_PORT` env present; ensure ports starting at `BASE_UDP_PORT` are free for dynamic adds.
 
 6) Batch and pre-demux alignment — DONE
-   - `pipeline.txt max-batch-size=64`; `pgie.txt batch-size=64` with b64 engine path. Zero‑source start maintained.
+   - In-code pre-demux: `nvmultiurisrcbin ... batched-push-timeout=33000 ! nvinfer ... ! nvstreamdemux`. Zero‑source start maintained.
 
 7) Logging and observability
 - Keep branch link logs. Optionally add lightweight per-branch FPS counters (info-level only) for soak testing.
