@@ -50,7 +50,12 @@
 
 ## Files
 
-- `src/rtsp_server.c` - Minimal C RTSP wrapper (builds post-demux branches)
+- `src/main.c` - Tiny entrypoint (calls setup/loop/teardown)
+- `src/app.c` - Pipeline + RTSP server setup; lifecycle (builds DS pre-demux in code: nvmultiurisrcbin → nvinfer(pgie.txt) → nvstreamdemux)
+- `src/branch.c` - Per-stream branch building
+- `src/control.c` - Simple HTTP control (`/add_demo_stream`, `/status`)
+- `src/config.c` - Config parsing and helpers
+- `src/log.h`, `src/state.h` - Logging macros and shared state
 - `pipeline.txt` - Optional pre-demux pipeline (compatibility)
 - `pgie.txt` - TensorRT inference configuration
 - `Dockerfile` - Container image
@@ -68,6 +73,7 @@
 ```bash
 ./run.sh
 ```
+
 
 ### Access Streams
 ```bash
@@ -87,10 +93,15 @@ ffplay -rtsp_transport tcp rtsp://10.243.223.217:8554/s1
 
 ## Configuration
 
-- Single config file: `pipeline.txt` (pre-demux pipeline with `nvstreamdemux name=demux`). One line only; parsed by `gst_parse_launch`.
+- DeepStream stage is built in code: `nvmultiurisrcbin → nvinfer (pgie.txt) → nvstreamdemux`, and per‑stream overlays use `nvosd` (nvosdbin) after demux.
 - Minimal envs:
-  - `STREAMS` — number of `/sN` endpoints (default 3)
+  - Removed. Server starts empty and uses control API to add streams.
   - `RTSP_PORT` — RTSP TCP port (default 8554)
+  - `CTRL_PORT` — Control HTTP port for `/add_demo_stream` and `/status` (default 8080; fixed for Docker HEALTHCHECK)
+  - `HW_THRESHOLD` — Number of NVENC (HW) streams to allow before using SW encoders (default 8)
+  - `SW_MAX` — Number of software-encoded streams allowed (default 56)
+  - `MAX_STREAMS` — Override total capacity (default `HW_THRESHOLD + SW_MAX`)
+  - `X264_THREADS` — Threads per x264 encoder (default ~half cores, capped at 4)
 
 ## Future Enhancements
 
@@ -105,7 +116,7 @@ ffplay -rtsp_transport tcp rtsp://10.243.223.217:8554/s1
 ### Why This Architecture?
 
 1. **Batch Efficiency**: GPU processes 30 streams in ~same time as 1 stream
-2. **Config-Based**: Pipeline defined in text, not code
+2. **Clarity**: DeepStream stage defined in code (nvinfer + nvosd), simple control API
 3. **Stable OSD**: Per-stream OSD avoids batch synchronization issues
 4. **Production Ready**: Uses battle-tested deepstream-app components
 
@@ -115,6 +126,8 @@ ffplay -rtsp_transport tcp rtsp://10.243.223.217:8554/s1
 - ✅ Non-blinking detection overlays (per-stream OSD)
 - ✅ Efficient memory usage (shared buffers, zero-copy)
 - ✅ Clean separation (pipeline vs serving layer)
+- ✅ Startup sanity checks for required plugins; clear error messages
+- ✅ Docker HEALTHCHECK via control `/status` (requires `CTRL_PORT`)
 
 ## References
 
@@ -125,5 +138,5 @@ ffplay -rtsp_transport tcp rtsp://10.243.223.217:8554/s1
 ---
 
 **Date:** 2025-09-30
-**Status:** ✅ NVENC + UDP-wrapped RTSP (C server)
+**Status:** ✅ x264enc (CPU) + UDP-wrapped RTSP (C server)
 **Version:** 1.2

@@ -1,6 +1,6 @@
 # Plan
 
-Goal: Minimal C, single config. Single happy path: start empty (only `/test`), add demo streams via a tiny control API that returns the RTSP URL.
+Goal: Minimal C, single config. Single happy path (C, master): start empty (only `/test`), add demo streams via a tiny control API that returns the RTSP URL. Python is optional for readability.
 
 Pre‑change rule
 - Always read samples in `deepstream-8.0/` before modifying code/docs. Confirmed our RTSP approach matches `deepstream_sink_bin.c` (UDP‑wrap with `rtph264pay` → `udpsink`, RTSP `udpsrc name=pay0`).
@@ -20,12 +20,12 @@ Open items (execution plan)
      - Mount RTSP factory at `/sN` wrapping UDP (udpsrc name=pay0).
      - POST to nvmultiurisrcbin REST (port 9010) to add `SAMPLE_URI`.
      - Respond `200` with `{ "path": "/sN", "url": "rtsp://<PUBLIC_HOST>:<rtsp_port>/sN" }`. If N reaches 64, return HTTP 429 `{ "error": "capacity_exceeded", "max": 64 }`.
-   - Startup behavior: set `STREAMS=0`; only `/test` is mounted.
+   - Startup behavior: service starts empty; only `/test` is mounted.
 2) Verify end‑to‑end
    - Start empty; curl `/add_demo_stream`; receive JSON; play returned URL via ffplay.
 3) Keep C tiny and readable
    - Single config file; explicit pad linking; narrow API surface.
-   - Minimal envs: `RTSP_PORT`, `BASE_UDP_PORT`, `USE_OSD`, `SAMPLE_URI`, `PUBLIC_HOST` (no startup count; service always starts empty).
+   - Minimal envs: `RTSP_PORT`, `BASE_UDP_PORT`, `SAMPLE_URI`, `PUBLIC_HOST` (no startup count; service always starts empty).
 4) Engine caching — DONE
    - Persist engine to host via `/models` mount (run.sh mounts `./models` to `/models`).
    - PGIE config points `model-engine-file` to `/models/trafficcamnet_b64_gpu0_fp16.engine`.
@@ -33,14 +33,19 @@ Open items (execution plan)
    - Validate with ffplay over TCP from macOS; `/s0..s2` must play.
 
 Notes
-- We intentionally avoid Python. All serving is C + config.
-- If DeepStream REST (port 9000) is occupied in your environment, it does not affect RTSP; warnings are benign.
+- Use C (master) for production scale. Python (`python-try`) is optional/dev.
+- DeepStream REST (9000) is independent of RTSP; logs are informational.
+
+Branch overview (what to use when)
+- `master` — C, production path. NVENC→RTP/UDP→RTSP wrap. Batch‑64 by default. Engine cached under `./models`. Control API on 8080. Recommended for 64‑stream tests.
+- `c-b8-config` — C, batch‑8 variant. Same as master but mux+PGIE set to 8 and `nvmultiurisrcbin port=9000` in pipeline. Use this if your GPU shows NVENC pressure with b64; you can still serve 64 streams by micro‑batching.
+- `python-try` — Python GI + Flask control API (8081). Readable and close to C, but on this host hits NVENC session limits around ~8–10. Keep for dev; use C for scale.
 
 ---
 
  Next Phase: Scale to 64 (readiness done)
 
-Scope: Keep STREAMS=2 for now. Do not implement yet; capture changes to apply before scaling tests.
+Scope: Begin with 2–3 dynamic adds via API; scale gradually.
 
 1) RTSP parity with DeepStream samples — DONE
    - `udpsrc buffer-size` used; no `address` in RTSP factory launch.
@@ -48,13 +53,13 @@ Scope: Keep STREAMS=2 for now. Do not implement yet; capture changes to apply be
 2) Per-branch queue tuning
 - DONE: `queue leaky=2`, `max-size-time=200ms`, buffers/bytes unset (0).
 
-3) Default OSD stays ON for correctness; consider disabling only for heavy scale soak tests.
+3) OSD stays ON for correctness.
 
 4) NVENC tuning and bitrate
 - Keep `insert-sps-pps=1`, `idrinterval/iframeinterval` aligned to framerate. Consider lower per-stream bitrate (e.g., 2–3 Mbps @720p30) with a single env for consistency.
 
 5) UDP ports configurability
-- DONE: `BASE_UDP_PORT` env present; ensure `[BASE_UDP_PORT .. +STREAMS-1]` is free.
+- DONE: `BASE_UDP_PORT` env present; ensure ports starting at `BASE_UDP_PORT` are free for dynamic adds.
 
 6) Batch and pre-demux alignment — DONE
    - `pipeline.txt max-batch-size=64`; `pgie.txt batch-size=64` with b64 engine path. Zero‑source start maintained.
