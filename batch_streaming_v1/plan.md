@@ -1,6 +1,6 @@
 # Plan
 
-Goal: Minimal C, single config. Single happy path: start empty (only `/test`), add demo streams via a tiny control API that returns the RTSP URL.
+Goal: Minimal C, single config. Single happy path (C, master): start empty (only `/test`), add demo streams via a tiny control API that returns the RTSP URL. Python is optional for readability.
 
 Pre‑change rule
 - Always read samples in `deepstream-8.0/` before modifying code/docs. Confirmed our RTSP approach matches `deepstream_sink_bin.c` (UDP‑wrap with `rtph264pay` → `udpsink`, RTSP `udpsrc name=pay0`).
@@ -33,8 +33,13 @@ Open items (execution plan)
    - Validate with ffplay over TCP from macOS; `/s0..s2` must play.
 
 Notes
-- We intentionally avoid Python. All serving is C + config.
-- If DeepStream REST (port 9000) is occupied in your environment, it does not affect RTSP; warnings are benign.
+- Use C (master) for production scale. Python (`python-try`) is optional/dev.
+- DeepStream REST (9000) is independent of RTSP; logs are informational.
+
+Branch overview (what to use when)
+- `master` — C, production path. NVENC→RTP/UDP→RTSP wrap. Batch‑64 by default. Engine cached under `./models`. Control API on 8080. Recommended for 64‑stream tests.
+- `c-b8-config` — C, batch‑8 variant. Same as master but mux+PGIE set to 8 and `nvmultiurisrcbin port=9000` in pipeline. Use this if your GPU shows NVENC pressure with b64; you can still serve 64 streams by micro‑batching.
+- `python-try` — Python GI + Flask control API (8081). Readable and close to C, but on this host hits NVENC session limits around ~8–10. Keep for dev; use C for scale.
 
 ---
 

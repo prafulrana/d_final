@@ -7,7 +7,7 @@
   - `samples/configs/deepstream-app*` (`rtsp-port`, sink settings, demux usage)
 - Do not introduce new approaches that diverge from these patterns unless documented rationale is added here.
 
-## How To Run (Single Happy Path)
+## How To Run (Single Happy Path — C, master)
 - Requirements: Docker with NVIDIA runtime (`--gpus all`), access to nvcr.io.
 - Build: `./build.sh`
 - Start service EMPTY (only `/test` present): `./run.sh`
@@ -17,7 +17,7 @@
 - Play from macOS: `ffplay -rtsp_transport tcp rtsp://<host>:8554/s0`
 - Sanity any time: `ffplay -rtsp_transport tcp rtsp://<host>:8554/test`
 
-## Configuration Strategy
+## Configuration Strategy (C, master)
 - Single config file: `pipeline.txt` defines all pre‑demux behavior and sources.
 - C code only handles post‑demux and RTSP. No encoder toggles or branches.
  - Per‑stream encode uses `nvv4l2h264enc` (NVENC), then RTP/UDP egress to localhost; RTSP wraps from UDP (DeepStream pattern).
@@ -26,9 +26,9 @@
  - Queue per branch is tuned for low latency: `leaky=2` (downstream) and `max-size-time=200ms`.
  - RTSP factories wrap UDP using `udpsrc port=<p> buffer-size=524288 name=pay0` with H264 RTP caps.
  - Control API: service starts with no `/sN`. Hitting `GET /add_demo_stream` auto‑adds a sample source and mounts the next `/sN`, returning its RTSP URL as JSON. Capacity is fixed at 64; requests beyond that return HTTP 429 with `{ "error": "capacity_exceeded", "max": 64 }`.
- - Optional REST wrapper: set `AUTO_ADD_SAMPLES=N` to add N sample sources at runtime via nvmultiurisrcbin REST (port 9010). For a zero‑source start, omit `uri-list` in `pipeline.txt` and ensure `max-batch-size >= N`.
+ - Optional REST wrapper: set `AUTO_ADD_SAMPLES=N` to add N sample sources at runtime via nvmultiurisrcbin REST (port 9000). For a zero‑source start, omit `uri-list` in `pipeline.txt` and ensure `max-batch-size >= N`.
 
-## Minimal Env Vars
+## Minimal Env Vars (C, master)
 - `RTSP_PORT` — RTSP TCP port (default 8554; auto‑increments if busy)
 - `BASE_UDP_PORT` — starting UDP port for per‑stream RTP egress (default 5000)
 - `USE_OSD` — enable per‑stream overlays (default 1)
@@ -54,7 +54,12 @@
   - First run after bumping PGIE batch-size builds a new engine; allow ~1–2 minutes for b64.
 - Port conflicts:
   - RTSP retries 8554..+9. Use the logged port in your ffplay URL.
-  - DeepStream’s REST (9000) may already be bound; it doesn’t affect RTSP.
+  - DeepStream’s REST (9000) is independent of RTSP; logs are informational.
+
+## Branch Profiles
+- `master` (C): production path, batch‑64, engine cached under `./models`. Control API on 8080. Best for 64‑stream tests.
+- `c-b8-config` (C): batch‑8 variant to reduce inference memory footprint and ease NVENC pressure; `nvmultiurisrcbin port=9000` enabled. Still supports 64 streams (micro‑batching).
+- `python-try` (Python): readable/dev server with Flask on `CONTROL_PORT` (default 8081). Mirrors C pipeline with NVENC tuning and staggered adds. On this host, NVENC sessions fail ~8–10; use for dev, not for 64‑stream scale.
 
 ## Scaling Considerations
 - Match `STREAMS` with `max-batch-size` in `pipeline.txt`; set framerate/resize pre‑demux for uniform NVENC input.
