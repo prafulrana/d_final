@@ -6,7 +6,12 @@
 
 typedef struct {
   GstElement *queue, *conv_pre, *caps_pre, *osd, *conv_post, *caps_post;
-  GstElement *conv_cpu, *rate_sw, *caps_cpu, *enc, *parse, *pay, *udp;
+  // SW path throttle + format
+  GstElement *conv_cpu, *rate_sw, *caps_cpu;
+  // HW path throttle sandwich (sysmem fps then back to NVMM)
+  GstElement *conv_rate_hw, *caps_rate_sys_hw, *rate_hw, *caps_rate_fps_hw, *conv_back_hw, *caps_back_nvmm_hw;
+  // Common tail
+  GstElement *enc, *parse, *pay, *udp;
 } BranchElems;
 
 static guint get_env_uint(const char *name, guint defval) {
@@ -29,6 +34,13 @@ static gboolean create_elements(guint index, BranchElems *e, gboolean *enc_is_hw
   e->conv_cpu = gst_element_factory_make("nvvideoconvert", NULL);
   e->rate_sw = gst_element_factory_make("videorate", NULL);
   e->caps_cpu = gst_element_factory_make("capsfilter", NULL);
+  // HW throttle chain
+  e->conv_rate_hw = gst_element_factory_make("nvvideoconvert", NULL);
+  e->caps_rate_sys_hw = gst_element_factory_make("capsfilter", NULL);
+  e->rate_hw = gst_element_factory_make("videorate", NULL);
+  e->caps_rate_fps_hw = gst_element_factory_make("capsfilter", NULL);
+  e->conv_back_hw = gst_element_factory_make("nvvideoconvert", NULL);
+  e->caps_back_nvmm_hw = gst_element_factory_make("capsfilter", NULL);
 
   // Encoder selection (HW for first g_hw_threshold)
   if (index < g_hw_threshold) {
@@ -77,6 +89,23 @@ static gboolean create_elements(guint index, BranchElems *e, gboolean *enc_is_hw
       "control-rate", 1,
       "preset-level", 1,
       NULL);
+    // Prepare HW fps throttle elements (sysmem NV12 -> videorate -> NVMM NV12)
+    guint fps = get_env_uint("OUTPUT_FPS", 30);
+    if (!e->conv_rate_hw || !e->caps_rate_sys_hw || !e->rate_hw || !e->caps_rate_fps_hw || !e->conv_back_hw || !e->caps_back_nvmm_hw) {
+      LOG_ERR("Element creation failed (HW throttle) for /s%u", index);
+      return FALSE;
+    }
+    GstCaps *caps_sys = gst_caps_from_string("video/x-raw,format=NV12");
+    g_object_set(e->caps_rate_sys_hw, "caps", caps_sys, NULL);
+    gst_caps_unref(caps_sys);
+    gchar *fps_caps = g_strdup_printf("video/x-raw,framerate=%u/1", fps);
+    GstCaps *caps_fps = gst_caps_from_string(fps_caps);
+    g_free(fps_caps);
+    g_object_set(e->caps_rate_fps_hw, "caps", caps_fps, NULL);
+    gst_caps_unref(caps_fps);
+    GstCaps *caps_nvmm_back = gst_caps_from_string("video/x-raw(memory:NVMM),format=NV12");
+    g_object_set(e->caps_back_nvmm_hw, "caps", caps_nvmm_back, NULL);
+    gst_caps_unref(caps_nvmm_back);
   } else {
     guint fps = get_env_uint("OUTPUT_FPS", 30);
     if (!e->rate_sw) {
@@ -111,7 +140,9 @@ static gboolean create_elements(guint index, BranchElems *e, gboolean *enc_is_hw
 static void cleanup_branch(const BranchElems *e, gboolean enc_is_hw) {
   if (!e) return;
   if (enc_is_hw) {
-    gst_bin_remove_many(GST_BIN(g_pre_bin), e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->enc, e->parse, e->pay, e->udp, NULL);
+    gst_bin_remove_many(GST_BIN(g_pre_bin), e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post,
+      e->conv_rate_hw, e->caps_rate_sys_hw, e->rate_hw, e->caps_rate_fps_hw, e->conv_back_hw, e->caps_back_nvmm_hw,
+      e->enc, e->parse, e->pay, e->udp, NULL);
   } else {
     gst_bin_remove_many(GST_BIN(g_pre_bin), e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->conv_cpu, e->rate_sw, e->caps_cpu, e->enc, e->parse, e->pay, e->udp, NULL);
   }
@@ -120,8 +151,12 @@ static void cleanup_branch(const BranchElems *e, gboolean enc_is_hw) {
 static gboolean link_branch(guint index, const BranchElems *e, gboolean enc_is_hw) {
   gboolean ok = FALSE;
   if (enc_is_hw) {
-    gst_bin_add_many(GST_BIN(g_pre_bin), e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->enc, e->parse, e->pay, e->udp, NULL);
-    ok = gst_element_link_many(e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->enc, e->parse, e->pay, e->udp, NULL);
+    gst_bin_add_many(GST_BIN(g_pre_bin), e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post,
+      e->conv_rate_hw, e->caps_rate_sys_hw, e->rate_hw, e->caps_rate_fps_hw, e->conv_back_hw, e->caps_back_nvmm_hw,
+      e->enc, e->parse, e->pay, e->udp, NULL);
+    ok = gst_element_link_many(e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post,
+      e->conv_rate_hw, e->caps_rate_sys_hw, e->rate_hw, e->caps_rate_fps_hw, e->conv_back_hw, e->caps_back_nvmm_hw,
+      e->enc, e->parse, e->pay, e->udp, NULL);
   } else {
     gst_bin_add_many(GST_BIN(g_pre_bin), e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->conv_cpu, e->rate_sw, e->caps_cpu, e->enc, e->parse, e->pay, e->udp, NULL);
     ok = gst_element_link_many(e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->conv_cpu, e->rate_sw, e->caps_cpu, e->enc, e->parse, e->pay, e->udp, NULL);
@@ -140,7 +175,9 @@ static gboolean link_branch(guint index, const BranchElems *e, gboolean enc_is_h
   gst_object_unref(demux_src); gst_object_unref(queue_sink);
 
   if (enc_is_hw) {
-    GstElement *els[] = { e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->enc, e->parse, e->pay, e->udp, NULL };
+    GstElement *els[] = { e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post,
+      e->conv_rate_hw, e->caps_rate_sys_hw, e->rate_hw, e->caps_rate_fps_hw, e->conv_back_hw, e->caps_back_nvmm_hw,
+      e->enc, e->parse, e->pay, e->udp, NULL };
     for (int i = 0; els[i]; ++i) gst_element_sync_state_with_parent(els[i]);
   } else {
     GstElement *els[] = { e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->conv_cpu, e->rate_sw, e->caps_cpu, e->enc, e->parse, e->pay, e->udp, NULL };
