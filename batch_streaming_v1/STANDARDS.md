@@ -2,7 +2,7 @@
 
 ## Always Read DeepStream Samples First
 - Before making any code or doc changes, read the samples under `deepstream-8.0/` in this repo. Align implementation and configuration with DeepStream 8.0 patterns, especially:
-  - `sources/apps/apps-common/src/deepstream_sink_bin.c` (RTSP via UDP-wrap, `rtph264pay` + `udpsink`, `udpsrc name=pay0`)
+  - `sources/apps/apps-common/src/deepstream_sink_bin.c` (RTSP via UDP-wrap: UDP RTP → `rtph264depay` → `rtph264pay name=pay0` → RTSP)
   - `sources/apps/sample_apps/deepstream-app` (demux/sink wiring and config parsing)
   - `samples/configs/deepstream-app*` (`rtsp-port`, sink settings, demux usage)
 - Do not introduce new approaches that diverge from these patterns unless documented rationale is added here.
@@ -20,14 +20,14 @@
 ## Configuration Strategy (C, master)
 - Pre‑demux (DeepStream) is built in code: `nvmultiurisrcbin → nvinfer (pgie.txt) → nvstreamdemux name=demux`, and per‑stream overlays are applied with `nvosd` (nvosdbin) after demux.
 - C code handles post‑demux and RTSP. Keep options minimal.
-- Per‑stream encode policy (hard limits for predictability):
+  - Per‑stream encode policy (hard limits for predictability):
   - First 8 streams: try NVENC (`nvv4l2h264enc`) with low‑latency props.
   - Remaining streams: software H.264 (`x264enc` → fallback `avenc_h264` → `openh264enc`) including NVMM→I420 CPU hop.
   - Egress: RTP/UDP to localhost; RTSP wraps from UDP (DeepStream pattern).
- - RTSP caps: advertise payload type in caps. Do not set `pt` on `udpsrc` (set `payload=96` in caps and/or `pt` on the payloader).
+ - RTSP wrapping: From UDP RTP use `udpsrc` with H264 RTP caps, then `rtph264depay ! rtph264pay name=pay0`. Do not set `pt` on `udpsrc`.
 - PGIE configuration comes from `pgie.txt`, and OSD uses `nvosd` (nvosdbin) on each stream.
- - Queue per branch is tuned for low latency: `leaky=2` (downstream) and `max-size-time=200ms`.
- - RTSP factories wrap UDP using `udpsrc port=<p> buffer-size=524288 name=pay0` with H264 RTP caps.
+ - Queue per branch is tuned for stability: `leaky=0` (no drops) and `max-size-time=200ms`.
+ - RTSP factories wrap UDP using `udpsrc port=<p> buffer-size=524288 caps=application/x-rtp,... ! rtph264depay ! rtph264pay name=pay0`.
  - Control API: service starts with no `/sN`. Hitting `GET /add_demo_stream` auto‑adds a sample source and mounts the next `/sN`, returning its RTSP URL as JSON.
    - Capacity: hard limit defaults — `HW_THRESHOLD=8`, `SW_MAX=56`, `MAX_STREAMS=64`. Override via envs.
    - Requests beyond capacity return HTTP 429 with `{ "error": "capacity_exceeded", "max": <N> }`.
@@ -46,7 +46,7 @@
   - Verify: `gst-inspect-1.0 x264enc` (or fallback `avenc_h264`).
 Already implemented by default:
 - Chain: `… NVMM RGBA → nvosdbin → NVMM NV12 → [NVENC | NVMM→I420] → encoder → h264parse → rtph264pay → udpsink`.
-- x264enc props: `tune=zerolatency, speed-preset=ultrafast, bitrate=3000, key-int-max=60, bframes=0, threads≈half cores (cap 4)`; override with `X264_THREADS`.
+- x264enc props: `tune=zerolatency, speed-preset=ultrafast, bitrate=3000, key-int-max=30, bframes=0, threads≈half cores (cap 4)`; override with `X264_THREADS` (run.sh defaults it to 2).
 - Note: CPU cost increases with streams. Adjust bitrate/fps/resolution as needed.
 
 ## Environment Variables (C, master)
@@ -58,7 +58,12 @@ Already implemented by default:
 - `HW_THRESHOLD` — number of NVENC streams before switching to software (default 8)
 - `SW_MAX` — number of software streams allowed (default 56)
 - `MAX_STREAMS` — total allowed streams (default `HW_THRESHOLD + SW_MAX`)
-- `X264_THREADS` — threads per x264 encoder (default ~half cores, capped at 4)
+- `X264_THREADS` — threads per x264 encoder (run.sh defaults to 2; override as needed)
+
+## Pacing and Timing
+- Treat sources as live: `nvmultiurisrcbin live-source=1`.
+- Batch pacing: `batched-push-timeout=33000` (~33 ms) to align with ~30 fps.
+- Output pacing: `udpsink sync=true` ensures the sender honors buffer timestamps (no > realtime bursts on first stream).
 
 ## Engine Caching
 - The TensorRT engine is serialized to the host at `./models/...engine` (mounted into the container at `/models`).

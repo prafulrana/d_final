@@ -13,7 +13,7 @@
   - Reads config (args/env), does sanity checks, then `app_setup()`, `app_loop()`, `app_teardown()`.
 - src/app.{h,c} — L1 app lifecycle and RTSP/pipeline setup:
   - `sanity_check_plugins()`, `decide_max_streams()` (hard limits),
-  - `build_full_pipeline_and_server()` (loads pipeline.txt, mounts `/test`),
+  - `build_full_pipeline_and_server()` (builds pre‑demux in code; mounts `/test`),
   - `app_setup()`, `app_loop()`, `app_teardown()`.
 - src/branch.{h,c} — L2 per‑stream branch build:
   - `add_branch_and_mount()` calls small helpers to create and link elements, then mounts RTSP endpoint.
@@ -40,5 +40,6 @@ Branch matrix
 
 Notes
 - The Dockerfile includes `gstreamer1.0-plugins-ugly` and `gstreamer1.0-libav` so `x264enc`/`avenc_h264` are available.
-- RTSP wrap uses `udpsrc name=pay0` and RTP caps to carry payload type. Do not set `pt` on `udpsrc`.
+- RTSP wrap uses `udpsrc` with H264 RTP caps and re‑payloads to `rtph264pay name=pay0` (gst-rtsp-server requires `pay0`).
+- Pacing: sources flagged live (`live-source=1`), batched-push-timeout ~33 ms, and `udpsink sync=true` keep playback at realtime.
 - A container HEALTHCHECK pings `/status` on `$CTRL_PORT`. Startup sanity checks ensure required plugins are present before running.
