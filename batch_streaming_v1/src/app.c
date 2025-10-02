@@ -100,7 +100,7 @@ gboolean build_full_pipeline_and_server(const AppConfig *cfg, GstPipeline **out_
   // Build pre-demux chain in one go for readability. It uses:
   // nvmultiurisrcbin ! nvinfer (pgie) ! nvstreamdemux name=demux
   const gchar *pre_desc =
-    "nvmultiurisrcbin max-batch-size=64 batched-push-timeout=100000 width=1280 height=720 "
+    "nvmultiurisrcbin max-batch-size=64 batched-push-timeout=33000 width=1280 height=720 "
     "file-loop=true sync-inputs=false attach-sys-ts=true drop-on-latency=false "
     "! nvinfer config-file-path=/opt/nvidia/deepstream/deepstream-8.0/pgie.txt "
     "! nvstreamdemux name=demux";

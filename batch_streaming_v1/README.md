@@ -96,12 +96,13 @@ ffplay -rtsp_transport tcp rtsp://10.243.223.217:8554/s1
 - DeepStream stage is built in code: `nvmultiurisrcbin → nvinfer (pgie.txt) → nvstreamdemux`, and per‑stream overlays use `nvosd` (nvosdbin) after demux.
 - Minimal envs:
   - Removed. Server starts empty and uses control API to add streams.
-  - `RTSP_PORT` — RTSP TCP port (default 8554)
-  - `CTRL_PORT` — Control HTTP port for `/add_demo_stream` and `/status` (default 8080; fixed for Docker HEALTHCHECK)
-  - `HW_THRESHOLD` — Number of NVENC (HW) streams to allow before using SW encoders (default 8)
-  - `SW_MAX` — Number of software-encoded streams allowed (default 56)
-  - `MAX_STREAMS` — Override total capacity (default `HW_THRESHOLD + SW_MAX`)
-  - `X264_THREADS` — Threads per x264 encoder (default ~half cores, capped at 4)
+- `RTSP_PORT` — RTSP TCP port (default 8554)
+- `CTRL_PORT` — Control HTTP port for `/add_demo_stream` and `/status` (default 8080; fixed for Docker HEALTHCHECK)
+- `HW_THRESHOLD` — Number of NVENC (HW) streams to allow before using SW encoders (default 8)
+- `SW_MAX` — Number of software-encoded streams allowed (default 56)
+- `MAX_STREAMS` — Override total capacity (default `HW_THRESHOLD + SW_MAX`)
+- `X264_THREADS` — Threads per x264 encoder (default ~half cores, capped at 4)
+- `OUTPUT_FPS` — Throttle SW-encoded output to this fps (default 30 via videorate)
 
 ## Future Enhancements
 

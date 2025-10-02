@@ -6,7 +6,7 @@
 
 typedef struct {
   GstElement *queue, *conv_pre, *caps_pre, *osd, *conv_post, *caps_post;
-  GstElement *conv_cpu, *caps_cpu, *enc, *parse, *pay, *udp;
+  GstElement *conv_cpu, *rate_sw, *caps_cpu, *enc, *parse, *pay, *udp;
 } BranchElems;
 
 static guint get_env_uint(const char *name, guint defval) {
@@ -27,6 +27,7 @@ static gboolean create_elements(guint index, BranchElems *e, gboolean *enc_is_hw
   e->conv_post = gst_element_factory_make("nvvideoconvert", NULL);
   e->caps_post = gst_element_factory_make("capsfilter", NULL);
   e->conv_cpu = gst_element_factory_make("nvvideoconvert", NULL);
+  e->rate_sw = gst_element_factory_make("videorate", NULL);
   e->caps_cpu = gst_element_factory_make("capsfilter", NULL);
 
   // Encoder selection (HW for first g_hw_threshold)
@@ -58,11 +59,11 @@ static gboolean create_elements(guint index, BranchElems *e, gboolean *enc_is_hw
   }
 
   // Properties and caps
-  g_object_set(e->queue, "leaky", 2, "max-size-time", (guint64)200000000, "max-size-buffers", 0, "max-size-bytes", 0, NULL);
+  g_object_set(e->queue, "leaky", 0, "max-size-time", (guint64)200000000, "max-size-buffers", 0, "max-size-bytes", 0, NULL);
   GstCaps *caps_rgba = gst_caps_from_string("video/x-raw(memory:NVMM),format=RGBA");
   g_object_set(e->caps_pre, "caps", caps_rgba, NULL);
   gst_caps_unref(caps_rgba);
-  GstCaps *caps_nv12 = gst_caps_from_string("video/x-raw(memory:NVMM),format=NV12,framerate=30/1");
+  GstCaps *caps_nv12 = gst_caps_from_string("video/x-raw(memory:NVMM),format=NV12");
   g_object_set(e->caps_post, "caps", caps_nv12, NULL);
   gst_caps_unref(caps_nv12);
 
@@ -77,7 +78,14 @@ static gboolean create_elements(guint index, BranchElems *e, gboolean *enc_is_hw
       "preset-level", 1,
       NULL);
   } else {
-    GstCaps *caps_i420 = gst_caps_from_string("video/x-raw,format=I420");
+    guint fps = get_env_uint("OUTPUT_FPS", 30);
+    if (!e->rate_sw) {
+      LOG_ERR("Missing 'videorate' for SW path /s%u", index);
+      return FALSE;
+    }
+    gchar *caps_str = g_strdup_printf("video/x-raw,format=I420,framerate=%u/1", fps);
+    GstCaps *caps_i420 = gst_caps_from_string(caps_str);
+    g_free(caps_str);
     g_object_set(e->caps_cpu, "caps", caps_i420, NULL);
     gst_caps_unref(caps_i420);
     if (*enc_is_x264) {
@@ -105,7 +113,7 @@ static void cleanup_branch(const BranchElems *e, gboolean enc_is_hw) {
   if (enc_is_hw) {
     gst_bin_remove_many(GST_BIN(g_pre_bin), e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->enc, e->parse, e->pay, e->udp, NULL);
   } else {
-    gst_bin_remove_many(GST_BIN(g_pre_bin), e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->conv_cpu, e->caps_cpu, e->enc, e->parse, e->pay, e->udp, NULL);
+    gst_bin_remove_many(GST_BIN(g_pre_bin), e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->conv_cpu, e->rate_sw, e->caps_cpu, e->enc, e->parse, e->pay, e->udp, NULL);
   }
 }
 
@@ -115,8 +123,8 @@ static gboolean link_branch(guint index, const BranchElems *e, gboolean enc_is_h
     gst_bin_add_many(GST_BIN(g_pre_bin), e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->enc, e->parse, e->pay, e->udp, NULL);
     ok = gst_element_link_many(e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->enc, e->parse, e->pay, e->udp, NULL);
   } else {
-    gst_bin_add_many(GST_BIN(g_pre_bin), e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->conv_cpu, e->caps_cpu, e->enc, e->parse, e->pay, e->udp, NULL);
-    ok = gst_element_link_many(e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->conv_cpu, e->caps_cpu, e->enc, e->parse, e->pay, e->udp, NULL);
+    gst_bin_add_many(GST_BIN(g_pre_bin), e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->conv_cpu, e->rate_sw, e->caps_cpu, e->enc, e->parse, e->pay, e->udp, NULL);
+    ok = gst_element_link_many(e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->conv_cpu, e->rate_sw, e->caps_cpu, e->enc, e->parse, e->pay, e->udp, NULL);
   }
   if (!ok) return FALSE;
 
@@ -135,7 +143,7 @@ static gboolean link_branch(guint index, const BranchElems *e, gboolean enc_is_h
     GstElement *els[] = { e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->enc, e->parse, e->pay, e->udp, NULL };
     for (int i = 0; els[i]; ++i) gst_element_sync_state_with_parent(els[i]);
   } else {
-    GstElement *els[] = { e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->conv_cpu, e->caps_cpu, e->enc, e->parse, e->pay, e->udp, NULL };
+    GstElement *els[] = { e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->conv_cpu, e->rate_sw, e->caps_cpu, e->enc, e->parse, e->pay, e->udp, NULL };
     for (int i = 0; els[i]; ++i) gst_element_sync_state_with_parent(els[i]);
   }
   return TRUE;

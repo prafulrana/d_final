@@ -35,6 +35,7 @@ check_elem udpsink     || miss=1
 check_elem nvvideoconvert || miss=1
 check_elem nvosdbin       || miss=1
 check_elem nvstreamdemux  || miss=1
+check_elem videorate      || miss=1
 
 # Software H.264 encoder: try x264enc, then avenc_h264, then openh264enc
 encoder=""
@@ -57,7 +58,7 @@ fi
 echo "SANITY: Testing $encoder encode path (single buffer)" 
 gst-launch-1.0 -q \
   videotestsrc num-buffers=1 ! \
-  videoconvert ! \
+  videoconvert ! videorate ! video/x-raw,framerate=30/1 ! \
   "$encoder" tune=zerolatency speed-preset=ultrafast bitrate=3000 key-int-max=60 bframes=0 ! \
   h264parse ! \
   rtph264pay pt=96 ! \
