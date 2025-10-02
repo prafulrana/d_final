@@ -20,12 +20,12 @@ Open items (execution plan)
      - Mount RTSP factory at `/sN` wrapping UDP (udpsrc name=pay0).
      - POST to nvmultiurisrcbin REST (port 9010) to add `SAMPLE_URI`.
      - Respond `200` with `{ "path": "/sN", "url": "rtsp://<PUBLIC_HOST>:<rtsp_port>/sN" }`. If N reaches 64, return HTTP 429 `{ "error": "capacity_exceeded", "max": 64 }`.
-   - Startup behavior: set `STREAMS=0`; only `/test` is mounted.
+   - Startup behavior: service starts empty; only `/test` is mounted.
 2) Verify end‑to‑end
    - Start empty; curl `/add_demo_stream`; receive JSON; play returned URL via ffplay.
 3) Keep C tiny and readable
    - Single config file; explicit pad linking; narrow API surface.
-   - Minimal envs: `RTSP_PORT`, `BASE_UDP_PORT`, `USE_OSD`, `SAMPLE_URI`, `PUBLIC_HOST` (no startup count; service always starts empty).
+   - Minimal envs: `RTSP_PORT`, `BASE_UDP_PORT`, `SAMPLE_URI`, `PUBLIC_HOST` (no startup count; service always starts empty).
 4) Engine caching — DONE
    - Persist engine to host via `/models` mount (run.sh mounts `./models` to `/models`).
    - PGIE config points `model-engine-file` to `/models/trafficcamnet_b64_gpu0_fp16.engine`.
@@ -45,7 +45,7 @@ Branch overview (what to use when)
 
  Next Phase: Scale to 64 (readiness done)
 
-Scope: Keep STREAMS=2 for now. Do not implement yet; capture changes to apply before scaling tests.
+Scope: Begin with 2–3 dynamic adds via API; scale gradually.
 
 1) RTSP parity with DeepStream samples — DONE
    - `udpsrc buffer-size` used; no `address` in RTSP factory launch.
@@ -53,13 +53,13 @@ Scope: Keep STREAMS=2 for now. Do not implement yet; capture changes to apply be
 2) Per-branch queue tuning
 - DONE: `queue leaky=2`, `max-size-time=200ms`, buffers/bytes unset (0).
 
-3) Default OSD stays ON for correctness; consider disabling only for heavy scale soak tests.
+3) OSD stays ON for correctness.
 
 4) NVENC tuning and bitrate
 - Keep `insert-sps-pps=1`, `idrinterval/iframeinterval` aligned to framerate. Consider lower per-stream bitrate (e.g., 2–3 Mbps @720p30) with a single env for consistency.
 
 5) UDP ports configurability
-- DONE: `BASE_UDP_PORT` env present; ensure `[BASE_UDP_PORT .. +STREAMS-1]` is free.
+- DONE: `BASE_UDP_PORT` env present; ensure ports starting at `BASE_UDP_PORT` are free for dynamic adds.
 
 6) Batch and pre-demux alignment — DONE
    - `pipeline.txt max-batch-size=64`; `pgie.txt batch-size=64` with b64 engine path. Zero‑source start maintained.
