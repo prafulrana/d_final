@@ -23,7 +23,7 @@ Open items (execution plan)
    - Startup behavior: service starts empty; only `/test` is mounted.
 2) Verify end‑to‑end
    - Start empty; curl `/add_demo_stream`; receive JSON; play returned URL via ffplay.
-   - Output pacing: ensure UDP sink uses clock sync (`udpsink sync=true`) so single-stream startup does not run > realtime.
+   - Output pacing: ensure `nvmultiurisrcbin live-source=1` and UDP sink uses clock (`udpsink sync=true`) so single-stream startup does not run > realtime.
 3) Keep C tiny and readable
    - Single config file; explicit pad linking; narrow API surface.
    - Minimal envs: `RTSP_PORT`, `BASE_UDP_PORT`, `SAMPLE_URI`, `PUBLIC_HOST` (no startup count; service always starts empty).
