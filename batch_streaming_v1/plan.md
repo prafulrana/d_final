@@ -67,6 +67,10 @@ Scope: Begin with 2–3 dynamic adds via API; scale gradually.
 6) Batch and pre-demux alignment — DONE
    - In-code pre-demux: `nvmultiurisrcbin ... batched-push-timeout=33000 ! nvinfer ... ! nvstreamdemux`. Zero‑source start maintained.
 
+---
+
+API v1 work is tracked in branch `api`. Master remains the simple `/add_demo_stream` demo with pacing fixes.
+
 7) Logging and observability
 - Keep branch link logs. Optionally add lightweight per-branch FPS counters (info-level only) for soak testing.
 
