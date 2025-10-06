@@ -9,7 +9,7 @@
 ## How To Run (Pipeline File)
 - Requirements: Docker with NVIDIA runtime (`--gpus all`).
 - Build: `./build.sh`
-- Edit sources: update `batch_streaming_v1/pipeline.txt` `uri-list=...`.
+- Edit sources: update `pipeline.txt` `uri-list=...`.
 - Run: `./run.sh` (starts `/test` and bootstraps `/sN` for each URI).
 - Add more (optional): `curl http://localhost:8080/add_demo_stream`.
 - Play: `ffplay -rtsp_transport tcp rtsp://<host>:8554/s0`
