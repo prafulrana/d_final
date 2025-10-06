@@ -33,6 +33,13 @@
 - Output pacing: `udpsink sync=true` honors timestamps.
 - Engine cache under `./models`; delete to rebuild.
 
+## Regression Guardrails
+- Ports: if `8554` is busy, the server picks the next free port; always connect using the printed RTSP URL, or free `8554` and set `RTSP_PORT=8554`.
+- PUBLIC_HOST: set to a reachable address for remote clients (defaults to `127.0.0.1`).
+- HW encoder props: do not set properties blindly on `nvv4l2h264enc`. Guard with `g_object_class_find_property` (e.g., avoid `maxperf-enable` on platforms that lack it).
+- Startup order: prepare and mount branches before setting pipeline to `PLAYING` to avoid early segment/data-flow warnings.
+- File inputs: in `pipeline.txt` use `sync-inputs=true` and a higher `batched-push-timeout` (e.g., `100000`). Ensure `pgie` batch-size (and engine) is compatible with the number of URIs, or allow the engine to rebuild.
+
 ## Troubleshooting
 - `/test` works but `/sN` fails: check logs for `Linked demux src_N ...` and RTSP mount lines; verify `pgie.txt` batch-size ≥ number of URIs.
 - Ports: RTSP retries 8554..+9; use the logged port. Ensure `BASE_UDP_PORT` range is free.

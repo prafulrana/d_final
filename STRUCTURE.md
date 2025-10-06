@@ -37,3 +37,9 @@ Notes
 - RTSP wrap uses `udpsrc` with H264 RTP caps and re‑payloads to `rtph264pay name=pay0` (gst-rtsp-server requires `pay0`).
 - Pacing: sources flagged live (`live-source=1`), batched‑push‑timeout ~33 ms, and `udpsink sync=true` keep playback at realtime.
 - HEALTHCHECK pings `/status` on `$CTRL_PORT`. Sanity checks ensure required plugins are present before running.
+
+Operational notes (avoid regressions)
+- RTSP port may auto-increment from 8554 if busy; use the service port printed at startup and set `PUBLIC_HOST` for remote clients.
+- For file URIs in `pipeline.txt`, prefer `sync-inputs=true` and a higher `batched-push-timeout` (e.g., `100000`).
+- Bootstrap branch pads and RTSP mounts before setting the pipeline to `PLAYING` to reduce early data-flow warnings.
+- Guard platform-specific encoder properties on `nvv4l2h264enc` (check with `g_object_class_find_property`).

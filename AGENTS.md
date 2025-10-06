@@ -31,3 +31,10 @@ This repo hosts a C-based GStreamer/DeepStream RTSP server at the repository roo
 ## Notes for Agents
 - Keep edits within the repo root; align with `STRUCTURE.md` and `STANDARDS.md`.
 - Avoid new frameworks; prefer small, surgical changes to `app.c`, `branch.c`, `control.c`, `config.c`.
+
+## Common Pitfalls & Checks
+- RTSP port: server auto-increments if `8554` is busy. Always use the printed URL (e.g., `:8555`). Pin with `RTSP_PORT=8554` after freeing the port.
+- PUBLIC_HOST: set to a reachable IP when clients are remote; default is `127.0.0.1`.
+- Encoder props: `nvv4l2h264enc` varies by platform. Guard property sets with `g_object_class_find_property` (no hard-coded `maxperf-enable`).
+- Startup order: create/mount branches before setting pipeline to `PLAYING` to avoid “data flow before segment” warnings.
+- File inputs: in `pipeline.txt`, prefer `sync-inputs=true` and a larger `batched-push-timeout` for file URIs; align `pgie` batch-size/engine with `uri-list` or expect an engine rebuild.
