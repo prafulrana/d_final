@@ -67,15 +67,23 @@ static gboolean create_elements(guint index, BranchElems *e, gboolean *enc_is_hw
   gst_caps_unref(caps_nv12);
 
   if (*enc_is_hw) {
-    g_object_set(e->enc,
-      "insert-sps-pps", 1,
-      "iframeinterval", 30,
-      "idrinterval", 30,
-      "bitrate", 3000000,
-      "maxperf-enable", 1,
-      "control-rate", 1,
-      "preset-level", 1,
-      NULL);
+    // Set only properties that exist on this platform's nvv4l2h264enc
+    GObjectClass *klass = G_OBJECT_GET_CLASS(e->enc);
+    if (g_object_class_find_property(klass, "insert-sps-pps"))
+      g_object_set(e->enc, "insert-sps-pps", 1, NULL);
+    if (g_object_class_find_property(klass, "iframeinterval"))
+      g_object_set(e->enc, "iframeinterval", 30, NULL);
+    if (g_object_class_find_property(klass, "idrinterval"))
+      g_object_set(e->enc, "idrinterval", 30, NULL);
+    if (g_object_class_find_property(klass, "bitrate"))
+      g_object_set(e->enc, "bitrate", 3000000, NULL);
+    if (g_object_class_find_property(klass, "control-rate"))
+      g_object_set(e->enc, "control-rate", 1, NULL);
+    if (g_object_class_find_property(klass, "preset-level"))
+      g_object_set(e->enc, "preset-level", 1, NULL);
+    // Some versions expose 'preset' instead of 'preset-level'
+    if (g_object_class_find_property(klass, "preset"))
+      g_object_set(e->enc, "preset", 1, NULL);
   } else {
     GstCaps *caps_i420 = gst_caps_from_string("video/x-raw,format=I420");
     g_object_set(e->caps_cpu, "caps", caps_i420, NULL);
