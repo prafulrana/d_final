@@ -12,7 +12,7 @@ cmd=(docker run --rm \
   -e NVIDIA_DRIVER_CAPABILITIES="video,compute,utility" \
   -e RTSP_PORT="$RTSP_PORT" \
   -e BASE_UDP_PORT="${BASE_UDP_PORT:-5000}" \
-  -e PUBLIC_HOST="${PUBLIC_HOST:-10.243.249.215}" \
+  -e PUBLIC_HOST="${PUBLIC_HOST:-127.0.0.1}" \
   -e X264_THREADS="${X264_THREADS:-2}" \
   -v "$ENGINE_DIR":/models \
   batch_streaming:latest)
