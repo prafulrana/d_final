@@ -230,9 +230,6 @@ gboolean app_setup(const AppConfig *cfg) {
   gst_bus_add_signal_watch(bus);
   g_signal_connect(bus, "message", G_CALLBACK(on_bus_message), NULL);
 
-  // Start pipeline
-  gst_element_set_state(GST_ELEMENT(pipeline), GST_STATE_PLAYING);
-
   // Stash globals for dynamic add
   g_mutex_init(&g_state_lock);
   g_pipeline = pipeline;
@@ -262,6 +259,9 @@ gboolean app_setup(const AppConfig *cfg) {
     g_next_index = bootstrap;
     LOG_INF("Bootstrapped %u branch(es) from uri-list", bootstrap);
   }
+
+  // Start pipeline after branches are prepared to reduce early data flow warnings
+  gst_element_set_state(GST_ELEMENT(pipeline), GST_STATE_PLAYING);
 
   // Start minimal control API
   (void)g_thread_new("ctrl_http", control_http_thread, NULL);
