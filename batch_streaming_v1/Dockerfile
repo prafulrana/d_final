@@ -31,6 +31,7 @@ RUN gst-inspect-1.0 x264enc || gst-inspect-1.0 avenc_h264 || true
 
 # Copy application files
 COPY pgie.txt /opt/nvidia/deepstream/deepstream-8.0/pgie.txt
+COPY pipeline.txt /opt/nvidia/deepstream/deepstream-8.0/pipeline.txt
 COPY src /opt/nvidia/deepstream/deepstream-8.0/src
 # Optionally run DeepStream helper if present in base image too
 RUN if [ -x /opt/nvidia/deepstream/deepstream/user_additional_install.sh ]; then \

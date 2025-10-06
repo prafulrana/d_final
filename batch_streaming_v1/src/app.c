@@ -96,10 +96,56 @@ void decide_max_streams(void) {
 }
 
 // --- Build pipeline + RTSP server (no external pipeline.txt)
+// Optional: read pipeline description from a file (pipeline.txt) if present.
+// If not found, fall back to a sensible default.
+static gchar* read_file_to_string(const gchar *path) {
+  gchar *contents = NULL; gsize len = 0; GError *e = NULL;
+  if (!g_file_get_contents(path, &contents, &len, &e)) {
+    if (e) g_error_free(e);
+    return NULL;
+  }
+  g_strstrip(contents);
+  return contents;
+}
+
+static gchar* get_pipeline_file_path(void) {
+  const gchar *env = g_getenv("PIPELINE_FILE");
+  if (env && *env) return g_strdup(env);
+  return g_strdup("/opt/nvidia/deepstream/deepstream-8.0/pipeline.txt");
+}
+
+static guint count_uri_list_items(const gchar *desc) {
+  if (!desc) return 0;
+  const gchar *p = g_strstr_len(desc, -1, "uri-list=");
+  if (!p) return 0;
+  p += strlen("uri-list=");
+  if (*p != '\'' && *p != '"') return 0;
+  gchar quote = *p++;
+  const gchar *q = strchr(p, quote);
+  if (!q || q <= p) return 0;
+  gchar *uris = g_strndup(p, (gsize)(q - p));
+  guint count = 0;
+  gchar **tokens = g_strsplit(uris, ",", -1);
+  for (guint i = 0; tokens && tokens[i]; ++i) {
+    if (tokens[i][0] != '\0') count++;
+  }
+  g_strfreev(tokens);
+  g_free(uris);
+  return count;
+}
+
 gboolean build_full_pipeline_and_server(const AppConfig *cfg, GstPipeline **out_pipeline, GstRTSPServer **out_server) {
-  // Build pre-demux chain in one go for readability. It uses:
-  // nvmultiurisrcbin ! nvinfer (pgie) ! nvstreamdemux name=demux
-  const gchar *pre_desc =
+  // Build pre-demux chain, preferring a file-based config when available.
+  // Expected shape: nvmultiurisrcbin [uri-list=...] ! nvinfer ... ! nvstreamdemux name=demux
+  gchar *pre_desc_from_file = NULL;
+  gchar *pipeline_path = get_pipeline_file_path();
+  pre_desc_from_file = read_file_to_string(pipeline_path);
+  if (pre_desc_from_file) {
+    LOG_INF("Using pipeline file: %s", pipeline_path);
+  }
+  g_free(pipeline_path);
+
+  const gchar *pre_desc = pre_desc_from_file ? pre_desc_from_file :
     "nvmultiurisrcbin max-batch-size=64 batched-push-timeout=33000 width=1280 height=720 "
     "live-source=1 file-loop=true sync-inputs=false attach-sys-ts=true drop-on-latency=false "
     "! nvinfer config-file-path=/opt/nvidia/deepstream/deepstream-8.0/pgie.txt "
@@ -110,6 +156,7 @@ gboolean build_full_pipeline_and_server(const AppConfig *cfg, GstPipeline **out_
   if (err) {
     LOG_ERR("Failed to parse pre-demux pipeline: %s", err->message);
     g_error_free(err);
+    g_free(pre_desc_from_file);
     return FALSE;
   }
 
@@ -156,7 +203,7 @@ gboolean build_full_pipeline_and_server(const AppConfig *cfg, GstPipeline **out_
     LOG_INF("RTSP mounted: rtsp://%s:%u/test (synthetic)", g_public_host ? g_public_host : "127.0.0.1", chosen_port);
   }
   g_object_unref(mounts);
-
+  g_free(pre_desc_from_file);
   *out_pipeline = pipeline;
   *out_server = server;
   LOG_INF("Pipeline READY. RTSP server on %u", chosen_port);
@@ -198,6 +245,23 @@ gboolean app_setup(const AppConfig *cfg) {
   g_public_host = cfg->public_host;
   const gchar *service = gst_rtsp_server_get_service(server);
   if (service) g_rtsp_port = (guint) g_ascii_strtoull(service, NULL, 10);
+
+  // Bootstrap branches if the pipeline specifies a uri-list.
+  guint bootstrap = 0;
+  {
+    gchar *path = get_pipeline_file_path();
+    gchar *desc = read_file_to_string(path);
+    if (desc) { bootstrap = count_uri_list_items(desc); g_free(desc); }
+    g_free(path);
+  }
+  if (bootstrap > 0) {
+    if (bootstrap > g_max_streams) bootstrap = g_max_streams;
+    for (guint i = 0; i < bootstrap; ++i) {
+      (void)add_branch_and_mount(i, NULL, NULL);
+    }
+    g_next_index = bootstrap;
+    LOG_INF("Bootstrapped %u branch(es) from uri-list", bootstrap);
+  }
 
   // Start minimal control API
   (void)g_thread_new("ctrl_http", control_http_thread, NULL);
