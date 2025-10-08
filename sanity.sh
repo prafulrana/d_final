@@ -30,8 +30,7 @@ check_elem() {
 # Core elements for this app
 miss=0
 check_elem rtph264pay || miss=1
-check_elem udpsrc      || miss=1
-check_elem udpsink     || miss=1
+check_elem rtspclientsink || miss=1
 check_elem nvvideoconvert || miss=1
 check_elem nvosdbin       || miss=1
 check_elem nvstreamdemux  || miss=1

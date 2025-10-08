@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     libgstreamer1.0-dev \
     libgstreamer-plugins-base1.0-dev \
-    libgstrtspserver-1.0-dev \
+    gstreamer1.0-rtsp \
     gstreamer1.0-plugins-good \
     gstreamer1.0-plugins-bad \
     gstreamer1.0-plugins-ugly \
@@ -41,13 +41,13 @@ RUN if [ -x /opt/nvidia/deepstream/deepstream/user_additional_install.sh ]; then
 WORKDIR /opt/nvidia/deepstream/deepstream-8.0
 ENV CTRL_PORT=8080
 
-# Compile C RTSP server (multi-file, simple layering)
-RUN gcc -O2 -pipe -Wall -Wextra -Isrc -o rtsp_server \
+# Compile app (multi-file, simple layering)
+RUN gcc -O2 -pipe -Wall -Wextra -Isrc -o drishti \
     src/main.c src/app.c src/config.c src/branch.c src/control.c \
-    $(pkg-config --cflags --libs gstreamer-1.0 gstreamer-rtsp-server-1.0 glib-2.0)
+    $(pkg-config --cflags --libs gstreamer-1.0 glib-2.0)
 
-# Start RTSP server (NVENC + UDP-wrapped RTSP). Override via env.
-CMD ["/opt/nvidia/deepstream/deepstream-8.0/rtsp_server"]
+# Start app (direct RTSP push via rtspclientsink). Override via env.
+CMD ["/opt/nvidia/deepstream/deepstream-8.0/drishti"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD curl -fsS http://127.0.0.1:${CTRL_PORT}/status || exit 1

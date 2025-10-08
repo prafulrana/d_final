@@ -5,13 +5,11 @@
 #include <glib.h>
 
 typedef struct {
-  // Outputs / serving
-  guint rtsp_port;     // RTSP TCP port (e.g., 8554)
-  guint base_udp_port; // base UDP port for per-stream RTP egress
-
-  // Sample source + URL host for responses
+  // Sample source
   gchar *sample_uri;  // default DS sample video
-  gchar *public_host; // host/IP for returned RTSP URLs
+  // Optional: when set, bypass local RTSP server and push directly to remote via rtspclientsink.
+  // Example: rtsp://34.93.89.70:8554/s%u
+  gchar *push_url_tmpl;
 } AppConfig;
 
 gboolean parse_args(int argc, char *argv[], AppConfig *cfg);

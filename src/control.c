@@ -85,8 +85,8 @@ static void handle_request(int c, const char *buf) {
       if (!first) g_string_append(j, ",\n");
       first = FALSE;
       g_string_append_printf(j,
-        "    { \"index\": %u, \"path\": \"%s\", \"udp\": %u, \"encoder\": \"%s\" }",
-        i, g_streams[i].path, g_streams[i].udp_port, g_streams[i].enc_kind[0] ? g_streams[i].enc_kind : "unknown");
+        "    { \"index\": %u, \"path\": \"%s\", \"encoder\": \"%s\" }",
+        i, g_streams[i].path, g_streams[i].enc_kind[0] ? g_streams[i].enc_kind : "unknown");
     }
     g_string_append(j, "\n  ]\n}\n");
     gchar *hdr = g_strdup_printf("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n", j->len);
@@ -145,4 +145,3 @@ gpointer control_http_thread(gpointer data) {
   }
   return NULL;
 }
-

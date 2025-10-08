@@ -11,13 +11,10 @@
 GstPipeline *g_pipeline = NULL;
 GstElement  *g_pre_bin = NULL;
 GstElement  *g_demux = NULL;
-GstRTSPServer *g_rtsp_server = NULL;
-guint g_rtsp_port = 0;
 guint g_next_index = 0;
-guint g_base_udp_port_glb = 5000;
 GMutex g_state_lock;
 guint g_ctrl_port = 0;
-const gchar *g_public_host = NULL;
+const gchar *g_push_url_tmpl = NULL;
 guint g_hw_threshold = 8;
 guint g_sw_max = 56;
 guint g_max_streams = 64;
@@ -33,10 +30,18 @@ static gboolean have_factory(const char *name) {
 }
 
 gboolean sanity_check_plugins(void) {
-  const char *required[] = { "nvstreamdemux", "nvosdbin", "nvvideoconvert", "rtph264pay", "h264parse", "udpsink", NULL };
+  const char *required[] = { "nvstreamdemux", "nvosdbin", "nvvideoconvert", "rtph264pay", "h264parse", "rtspclientsink", NULL };
   for (int i = 0; required[i]; ++i) {
     if (!have_factory(required[i])) {
       LOG_ERR("Missing required GStreamer element: %s", required[i]);
+      return FALSE;
+    }
+  }
+  // If direct RTSP push is enabled via env, require rtspclientsink
+  const gchar *push_tmpl = g_getenv("RTSP_PUSH_URL_TMPL");
+  if (push_tmpl && *push_tmpl) {
+    if (!have_factory("rtspclientsink")) {
+      LOG_ERR("Direct RTSP push requested but rtspclientsink is missing");
       return FALSE;
     }
   }
@@ -95,7 +100,7 @@ void decide_max_streams(void) {
   LOG_INF("Capacity (hard limits): HW=%u, SW=%u, total=%u", g_hw_threshold, g_sw_max, g_max_streams);
 }
 
-// --- Build pipeline + RTSP server (no external pipeline.txt)
+// --- Build pipeline (no external pipeline.txt)
 // Optional: read pipeline description from a file (pipeline.txt) if present.
 // If not found, fall back to a sensible default.
 static gchar* read_file_to_string(const gchar *path) {
@@ -134,7 +139,8 @@ static guint count_uri_list_items(const gchar *desc) {
   return count;
 }
 
-gboolean build_full_pipeline_and_server(const AppConfig *cfg, GstPipeline **out_pipeline, GstRTSPServer **out_server) {
+gboolean build_pipeline(const AppConfig *cfg, GstPipeline **out_pipeline) {
+  (void)cfg; // config not needed to build pre-demux; push is handled per-branch
   // Build pre-demux chain, preferring a file-based config when available.
   // Expected shape: nvmultiurisrcbin [uri-list=...] ! nvinfer ... ! nvstreamdemux name=demux
   gchar *pre_desc_from_file = NULL;
@@ -171,42 +177,9 @@ gboolean build_full_pipeline_and_server(const AppConfig *cfg, GstPipeline **out_
     return FALSE;
   }
 
-  // RTSP server wrapping UDP ports
-  GstRTSPServer *server = gst_rtsp_server_new();
-  gst_rtsp_server_set_address(server, "0.0.0.0");
-  guint chosen_port = cfg->rtsp_port;
-  guint attach_id = 0;
-  for (guint attempt = 0; attempt < 10 && attach_id == 0; ++attempt) {
-    gchar *service = g_strdup_printf("%u", chosen_port);
-    gst_rtsp_server_set_service(server, service);
-    g_free(service);
-    attach_id = gst_rtsp_server_attach(server, NULL);
-    if (attach_id == 0) chosen_port++;
-  }
-  if (attach_id == 0) {
-    LOG_ERR("Failed to attach RTSP server after retries");
-    gst_object_unref(demux); gst_object_unref(pipeline);
-    return FALSE;
-  }
-
-  GstRTSPMountPoints *mounts = gst_rtsp_server_get_mount_points(server);
-  // Synthetic test endpoint
-  {
-    const gchar *launch_test =
-      "( videotestsrc is-live=true pattern=smpte "
-      "! videoconvert ! jpegenc quality=85 ! rtpjpegpay pt=26 name=pay0 )";
-    GstRTSPMediaFactory *f_test = gst_rtsp_media_factory_new();
-    gst_rtsp_media_factory_set_launch(f_test, launch_test);
-    gst_rtsp_media_factory_set_shared(f_test, TRUE);
-    gst_rtsp_media_factory_set_latency(f_test, 100);
-    gst_rtsp_mount_points_add_factory(mounts, "/test", f_test);
-    LOG_INF("RTSP mounted: rtsp://%s:%u/test (synthetic)", g_public_host ? g_public_host : "127.0.0.1", chosen_port);
-  }
-  g_object_unref(mounts);
   g_free(pre_desc_from_file);
   *out_pipeline = pipeline;
-  *out_server = server;
-  LOG_INF("Pipeline READY. RTSP server on %u", chosen_port);
+  LOG_INF("Pipeline READY. Direct RTSP push mode (no local RTSP server)");
   return TRUE;
 }
 
@@ -222,8 +195,8 @@ static gboolean on_signal_cb(gpointer data) {
 gboolean app_setup(const AppConfig *cfg) {
   decide_max_streams();
 
-  GstPipeline *pipeline = NULL; GstRTSPServer *server = NULL;
-  if (!build_full_pipeline_and_server(cfg, &pipeline, &server)) return FALSE;
+  GstPipeline *pipeline = NULL;
+  if (!build_pipeline(cfg, &pipeline)) return FALSE;
 
   // Attach bus handler for logs
   GstBus *bus = gst_element_get_bus(GST_ELEMENT(pipeline));
@@ -233,15 +206,10 @@ gboolean app_setup(const AppConfig *cfg) {
   // Stash globals for dynamic add
   g_mutex_init(&g_state_lock);
   g_pipeline = pipeline;
-  g_rtsp_server = server;
-  g_rtsp_port = cfg->rtsp_port; // will be updated below from server service
-  g_base_udp_port_glb = cfg->base_udp_port;
   g_demux = gst_bin_get_by_name(GST_BIN(pipeline), "demux");
   g_pre_bin = GST_ELEMENT(gst_element_get_parent(g_demux));
   g_next_index = 0;
-  g_public_host = cfg->public_host;
-  const gchar *service = gst_rtsp_server_get_service(server);
-  if (service) g_rtsp_port = (guint) g_ascii_strtoull(service, NULL, 10);
+  g_push_url_tmpl = cfg->push_url_tmpl; // enable direct RTSP push when set
 
   // Bootstrap branches if the pipeline specifies a uri-list.
   guint bootstrap = 0;

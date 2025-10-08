@@ -1,11 +1,11 @@
 //
-// Simple RTSP Server (Beginner Friendly)
-// --------------------------------------
+// Simple DeepStream Pipeline (Beginner Friendly)
+// ---------------------------------------------
 // Read this first:
 // - main() calls a few small functions so it’s easy to follow.
 // - The details live in app.c (setup/loop/teardown), branch.c (per-stream),
 //   control.c (tiny HTTP control), and config.c (args/env).
-// - Start with app_setup() to see how the pipeline and RTSP server are built.
+// - Start with app_setup() to see how the pipeline is built and pushed.
 
 #include <gst/gst.h>
 #include "app.h"
@@ -36,4 +36,3 @@ int main(int argc, char *argv[]) {
   cleanup_config(&cfg);
   return 0;
 }
-

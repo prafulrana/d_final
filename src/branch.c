@@ -6,7 +6,8 @@
 
 typedef struct {
   GstElement *queue, *conv_pre, *caps_pre, *osd, *conv_post, *caps_post;
-  GstElement *conv_cpu, *caps_cpu, *enc, *parse, *pay, *udp;
+  GstElement *conv_cpu, *caps_cpu, *enc, *parse;
+  GstElement *rtsp; // direct RTSP push (rtspclientsink)
 } BranchElems;
 
 static guint get_env_uint(const char *name, guint defval) {
@@ -49,10 +50,9 @@ static gboolean create_elements(guint index, BranchElems *e, gboolean *enc_is_hw
   }
 
   e->parse = gst_element_factory_make("h264parse", NULL);
-  e->pay = gst_element_factory_make("rtph264pay", NULL);
-  e->udp = gst_element_factory_make("udpsink", NULL);
+  e->rtsp = gst_element_factory_make("rtspclientsink", NULL);
 
-  if (!e->queue || !e->conv_pre || !e->caps_pre || !e->osd || !e->conv_post || !e->caps_post || !e->enc || !e->parse || !e->pay || !e->udp) {
+  if (!e->queue || !e->conv_pre || !e->caps_pre || !e->osd || !e->conv_post || !e->caps_post || !e->enc || !e->parse || !e->rtsp) {
     LOG_ERR("Element creation failed for /s%u", index);
     return FALSE;
   }
@@ -101,30 +101,38 @@ static gboolean create_elements(guint index, BranchElems *e, gboolean *enc_is_hw
       g_object_set(e->enc, "bitrate", 3000000, NULL);
     }
   }
-  g_object_set(e->pay, "config-interval", 1, "pt", 96, NULL);
-  guint port = g_base_udp_port_glb + index;
-  g_object_set(e->udp, "host", "127.0.0.1", "port", port, "sync", TRUE, "async", FALSE, NULL);
-  if (out_port) *out_port = port;
+  // Prepare H.264 bitstream; rtspclientsink will choose and configure the payloader internally.
+  // Direct RTSP push target (location derived from template). If the template has no
+  // printf-style specifiers, duplicate it verbatim.
+  const gchar *tmpl = (g_push_url_tmpl && *g_push_url_tmpl) ? g_push_url_tmpl : "rtsp://127.0.0.1:8554/s%u";
+  gchar *loc = NULL;
+  if (strchr(tmpl, '%')) loc = g_strdup_printf(tmpl, index);
+  else loc = g_strdup(tmpl);
+  // Force TCP for RTSP transport to match prior ffmpeg behavior and avoid UDP traversal issues.
+  // protocols flag: GST_RTSP_LOWER_TRANS_TCP = 4
+  g_object_set(e->rtsp, "location", loc, "protocols", 4, NULL);
+  g_free(loc);
+  if (out_port) *out_port = 0;
   return TRUE;
 }
 
 static void cleanup_branch(const BranchElems *e, gboolean enc_is_hw) {
   if (!e) return;
   if (enc_is_hw) {
-    gst_bin_remove_many(GST_BIN(g_pre_bin), e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->enc, e->parse, e->pay, e->udp, NULL);
+    gst_bin_remove_many(GST_BIN(g_pre_bin), e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->enc, e->parse, e->rtsp, NULL);
   } else {
-    gst_bin_remove_many(GST_BIN(g_pre_bin), e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->conv_cpu, e->caps_cpu, e->enc, e->parse, e->pay, e->udp, NULL);
+    gst_bin_remove_many(GST_BIN(g_pre_bin), e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->conv_cpu, e->caps_cpu, e->enc, e->parse, e->rtsp, NULL);
   }
 }
 
 static gboolean link_branch(guint index, const BranchElems *e, gboolean enc_is_hw) {
   gboolean ok = FALSE;
   if (enc_is_hw) {
-    gst_bin_add_many(GST_BIN(g_pre_bin), e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->enc, e->parse, e->pay, e->udp, NULL);
-    ok = gst_element_link_many(e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->enc, e->parse, e->pay, e->udp, NULL);
+    gst_bin_add_many(GST_BIN(g_pre_bin), e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->enc, e->parse, e->rtsp, NULL);
+    ok = gst_element_link_many(e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->enc, e->parse, e->rtsp, NULL);
   } else {
-    gst_bin_add_many(GST_BIN(g_pre_bin), e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->conv_cpu, e->caps_cpu, e->enc, e->parse, e->pay, e->udp, NULL);
-    ok = gst_element_link_many(e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->conv_cpu, e->caps_cpu, e->enc, e->parse, e->pay, e->udp, NULL);
+    gst_bin_add_many(GST_BIN(g_pre_bin), e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->conv_cpu, e->caps_cpu, e->enc, e->parse, e->rtsp, NULL);
+    ok = gst_element_link_many(e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->conv_cpu, e->caps_cpu, e->enc, e->parse, e->rtsp, NULL);
   }
   if (!ok) return FALSE;
 
@@ -140,36 +148,18 @@ static gboolean link_branch(guint index, const BranchElems *e, gboolean enc_is_h
   gst_object_unref(demux_src); gst_object_unref(queue_sink);
 
   if (enc_is_hw) {
-    GstElement *els[] = { e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->enc, e->parse, e->pay, e->udp, NULL };
+    GstElement *els[] = { e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->enc, e->parse, e->rtsp, NULL };
     for (int i = 0; els[i]; ++i) gst_element_sync_state_with_parent(els[i]);
   } else {
-    GstElement *els[] = { e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->conv_cpu, e->caps_cpu, e->enc, e->parse, e->pay, e->udp, NULL };
+    GstElement *els[] = { e->queue, e->conv_pre, e->caps_pre, e->osd, e->conv_post, e->caps_post, e->conv_cpu, e->caps_cpu, e->enc, e->parse, e->rtsp, NULL };
     for (int i = 0; els[i]; ++i) gst_element_sync_state_with_parent(els[i]);
   }
   return TRUE;
 }
 
-static gboolean mount_rtsp(const gchar *path, guint port) {
-  // Wrap the already-RTP H264 UDP stream by depayloading and re-payloading so the RTSP
-  // factory exposes a proper payloader named pay0 (as expected by gst-rtsp-server).
-  gchar *launch = g_strdup_printf(
-    "( udpsrc port=%u buffer-size=%lu caps=\"application/x-rtp, media=video, clock-rate=90000, encoding-name=H264, payload=96\" "
-    "! rtph264depay ! rtph264pay name=pay0 pt=96 )",
-    port, (unsigned long)(524288UL));
-  GstRTSPMountPoints *mounts = gst_rtsp_server_get_mount_points(g_rtsp_server);
-  GstRTSPMediaFactory *factory = gst_rtsp_media_factory_new();
-  gst_rtsp_media_factory_set_launch(factory, launch);
-  gst_rtsp_media_factory_set_shared(factory, TRUE);
-  gst_rtsp_media_factory_set_latency(factory, 100);
-  gst_rtsp_mount_points_add_factory(mounts, path, factory);
-  g_object_unref(mounts);
-  g_free(launch);
-  return TRUE;
-}
-
 gboolean add_branch_and_mount(guint index, gchar **out_path, gchar **out_url) {
   g_mutex_lock(&g_state_lock);
-  if (!g_pipeline || !g_demux || !g_pre_bin || !g_rtsp_server) {
+  if (!g_pipeline || !g_demux || !g_pre_bin || !(g_push_url_tmpl && *g_push_url_tmpl)) {
     g_mutex_unlock(&g_state_lock);
     return FALSE;
   }
@@ -177,25 +167,22 @@ gboolean add_branch_and_mount(guint index, gchar **out_path, gchar **out_url) {
   BranchElems be; gboolean enc_is_hw = FALSE; gboolean enc_is_x264 = FALSE; guint port = 0;
   if (!create_elements(index, &be, &enc_is_hw, &enc_is_x264, &port)) { g_mutex_unlock(&g_state_lock); return FALSE; }
   if (!link_branch(index, &be, enc_is_hw)) {
-    LOG_ERR("Link failed for /s%u (pre/osd/post/cpu/enc/rtp/udp)", index);
+    LOG_ERR("Link failed for /s%u (pre/osd/post/cpu/enc/rtp/rtsp)", index);
     cleanup_branch(&be, enc_is_hw);
     g_mutex_unlock(&g_state_lock);
     return FALSE;
   }
 
-  LOG_INF("Linked demux src_%u to UDP egress port %u (dynamic)", index, port);
-
   gchar *path = g_strdup_printf("/s%u", index);
-  (void)mount_rtsp(path, port);
-  LOG_INF("RTSP mounted: rtsp://%s:%u%s (udp-wrap H264 RTP @127.0.0.1:%u)", g_public_host ? g_public_host : "127.0.0.1", g_rtsp_port, path, port);
+  gchar *loc = NULL; if (strchr(g_push_url_tmpl, '%')) loc = g_strdup_printf(g_push_url_tmpl, index); else loc = g_strdup(g_push_url_tmpl);
+  LOG_INF("Linked demux src_%u to rtspclientsink → %s", index, loc);
   if (out_path) *out_path = g_strdup(path);
-  if (out_url) *out_url = g_strdup_printf("rtsp://%s:%u%s", g_public_host ? g_public_host : "127.0.0.1", g_rtsp_port, path);
+  if (out_url) *out_url = loc; else g_free(loc);
 
   g_streams[index].in_use = TRUE;
   g_streams[index].enc_is_hw = enc_is_hw;
   strncpy(g_streams[index].enc_kind, enc_is_hw ? "nvenc" : (enc_is_x264 ? "x264" : (g_str_has_prefix(G_OBJECT_TYPE_NAME(be.enc), "GstAv") ? "avenc" : "openh264")), sizeof(g_streams[index].enc_kind)-1);
   g_streams[index].enc_kind[sizeof(g_streams[index].enc_kind)-1] = '\0';
-  g_streams[index].udp_port = port;
   g_snprintf(g_streams[index].path, sizeof(g_streams[index].path), "%s", path);
   g_streams[index].queue = be.queue;
   g_streams[index].conv_pre = be.conv_pre;
@@ -207,8 +194,7 @@ gboolean add_branch_and_mount(guint index, gchar **out_path, gchar **out_url) {
   g_streams[index].caps_cpu = enc_is_hw ? NULL : be.caps_cpu;
   g_streams[index].enc = be.enc;
   g_streams[index].parse = be.parse;
-  g_streams[index].pay = be.pay;
-  g_streams[index].udp = be.udp;
+  g_streams[index].rtsp = be.rtsp;
 
   g_free(path);
   g_mutex_unlock(&g_state_lock);
