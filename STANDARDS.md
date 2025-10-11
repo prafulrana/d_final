@@ -154,7 +154,7 @@ uri_decode_bin.set_property("select-rtp-protocol", 4)              # 4 = TCP-onl
 ### nvstreammux Properties
 
 ```python
-# app.py lines 222-226
+# app.py lines 233-237
 g_streammux.set_property("width", 1280)
 g_streammux.set_property("height", 720)
 g_streammux.set_property("batch-size", 1)
@@ -163,6 +163,47 @@ g_streammux.set_property("live-source", 1)
 ```
 
 **Critical**: `batched-push-timeout` must be 4 seconds (4000000 microseconds) for live RTSP sources to prevent "reader too slow" errors from MediaMTX. Lower values (33ms) cause MediaMTX to drop hundreds of frames during pipeline startup/reconnection and tear down the session.
+
+### nvv4l2h264enc Encoder Properties
+
+```python
+# app.py lines 201-205
+encoder.set_property("bitrate", 3000000)
+encoder.set_property("profile", 2)          # 2 = Main profile (better compression/smoothness)
+encoder.set_property("preset-id", 0)        # 0 = P1 (highest performance preset)
+encoder.set_property("insert-sps-pps", 1)
+encoder.set_property("iframeinterval", 30)
+```
+
+**Profile Values**:
+- 0: Baseline (low complexity, mobile devices)
+- 2: Main (better compression, recommended for streaming)
+- 4: High (highest compression, more CPU overhead)
+
+**Preset-ID Values** (P1-P7):
+- 0: P1 (highest performance, lowest latency)
+- 6: P7 (lowest performance, highest compression)
+
+### Queue Element (Required for Smooth Output)
+
+```python
+# app.py lines 207-212
+queue = Gst.ElementFactory.make("queue", "queue")
+# Place AFTER encoder, BEFORE h264parse
+```
+
+**Why Critical**: Without queue, frame timing issues cause choppy/stuttering output. Queue provides buffering that smooths frame delivery to rtspclientsink.
+
+### rtspclientsink Properties
+
+```python
+# app.py lines 228-230
+rtsp_sink.set_property("location", rtsp_out)
+rtsp_sink.set_property("protocols", 0x00000004)  # TCP-only (matches input)
+rtsp_sink.set_property("latency", 200)           # 200ms buffer for smooth RTP timing
+```
+
+**Critical**: `latency=200` eliminates "Can't determine running time for this packet" warnings and ensures smooth RTP packet timing. Without it, output appears choppy despite correct frame rate.
 
 ## Performance Troubleshooting
 
@@ -179,19 +220,36 @@ g_streammux.set_property("live-source", 1)
 - ❌ Dropping frames at source → Doesn't fix timing issues
 
 **Actual fixes (in order of likelihood)**:
-1. Increase `batched-push-timeout` to 4000000 (4 seconds)
-2. Check TensorRT engine is cached (not rebuilding every run)
-3. Verify NVMM memory is being used (check `cb_newpad` logs)
-4. Check network latency/packet loss to RTSP server
-5. Only then: Profile actual GPU/CPU usage
+1. **Add queue element** after encoder (choppy video = missing queue 90% of the time)
+2. **Set encoder preset-id=0** (P1 highest performance) and profile=2 (Main)
+3. **Set rtspclientsink latency=200** (fixes "can't determine running time" warnings)
+4. Increase `batched-push-timeout` to 4000000 (4 seconds)
+5. Check TensorRT engine is cached (not rebuilding every run)
+6. Verify NVMM memory is being used (check `cb_newpad` logs)
+7. Check network latency/packet loss to RTSP server
+8. Only then: Profile actual GPU/CPU usage
 
-### rtspclientsink Properties
+## Video Quality Troubleshooting
 
-```python
-# app.py lines 218-219
-rtsp_sink.set_property("location", rtsp_out)
-rtsp_sink.set_property("protocols", 0x00000004)  # TCP-only (matches input)
-```
+**Symptom**: Output stream is choppy/stuttering while input is smooth
+
+**Root Cause (99% of the time)**: Missing queue element or encoder misconfiguration
+
+**Solution**:
+1. **Verify queue element exists** in pipeline: `encoder → queue → h264parse`
+2. **Check encoder properties**:
+   - `preset-id=0` (P1, not default)
+   - `profile=2` (Main, not Baseline)
+3. **Check rtspclientsink latency**:
+   - Must be set to 200ms minimum
+   - Logs show "can't determine running time" if missing
+4. **Compare with vanilla deepstream-app**: If vanilla is smooth with same source, it's our config
+
+**NOT the issue** (don't waste time here):
+- Resolution too high (we handle 64x 1080p streams)
+- Bitrate too high (GPU encoding is fast)
+- Network lag (that's latency, not choppiness)
+- MediaMTX relay configuration (if in_s0 is smooth, relay is fine)
 
 ## Commit Guidelines
 

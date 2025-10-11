@@ -14,7 +14,7 @@ d_final/
 
 ### app.py
 Main Python DeepStream application implementing:
-- **Pipeline**: nvurisrcbin → nvstreammux → nvinfer → nvvideoconvert → nvdsosd → nvvideoconvert → capsfilter → nvv4l2h264enc → h264parse → rtspclientsink
+- **Pipeline**: nvurisrcbin → nvstreammux → nvinfer → nvvideoconvert → nvdsosd → nvvideoconvert → capsfilter → nvv4l2h264enc → **queue** → h264parse → rtspclientsink
 - **Input**: RTSP stream with automatic reconnection via nvurisrcbin
 - **Output**: RTSP stream with detection boxes overlay
 - **Reconnection**: Built-in nvurisrcbin with TCP-only protocol (no manual logic)
@@ -24,8 +24,13 @@ Main Python DeepStream application implementing:
 - Lines 39-62: `cb_newpad()` - sets ghost pad target when decoder pad appears
 - Lines 64-67: `decodebin_child_added()` - tracks decodebin children
 - Lines 69-108: `create_source_bin()` - wraps nvurisrcbin in Bin with ghost pad
-- Lines 110-298: `main()` - creates pipeline, links elements, starts event loop
-- Lines 300-317: `parse_args()` and entry point
+- Lines 110-332: `main()` - creates pipeline, links elements, starts event loop
+- Lines 315-332: `parse_args()` and entry point
+
+**Critical Optimizations** (added for smooth output):
+- Lines 201-205: Encoder properties (preset-id=0, profile=2)
+- Lines 207-212: Queue element (essential for smooth frame delivery)
+- Line 230: rtspclientsink latency=200ms (smooth RTP timing)
 
 **nvurisrcbin Configuration** (lines 86-91):
 ```python
@@ -101,11 +106,13 @@ nvvideoconvert (post-OSD, format conversion)
   ↓
 capsfilter (I420 format)
   ↓
-nvv4l2h264enc (H.264 encoding, bitrate=3Mbps)
+nvv4l2h264enc (H.264 encoding, preset-id=0/P1, profile=2/Main, bitrate=3Mbps)
+  ↓
+queue (frame buffering for smooth delivery) ← CRITICAL for smooth output
   ↓
 h264parse (config-interval=-1)
   ↓
-rtspclientsink (TCP-only)
+rtspclientsink (TCP-only, latency=200ms) ← latency CRITICAL for RTP timing
   ↓
 RTSP Output (s0)
 ```
