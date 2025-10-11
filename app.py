@@ -199,8 +199,17 @@ def main(args):
         sys.stderr.write("Unable to create encoder\n")
         return -1
     encoder.set_property("bitrate", 3000000)
+    encoder.set_property("profile", 2)  # Main profile for better compression/smoothness
+    encoder.set_property("preset-id", 0)  # P1 (highest performance preset)
     encoder.set_property("insert-sps-pps", 1)
     encoder.set_property("iframeinterval", 30)
+
+    # Create queue after encoder
+    print("Creating queue")
+    queue = Gst.ElementFactory.make("queue", "queue")
+    if not queue:
+        sys.stderr.write("Unable to create queue\n")
+        return -1
 
     # Create parser
     print("Creating h264parse")
@@ -218,6 +227,7 @@ def main(args):
         return -1
     rtsp_sink.set_property("location", rtsp_out)
     rtsp_sink.set_property("protocols", 0x00000004)  # TCP only
+    rtsp_sink.set_property("latency", 200)  # 200ms buffer for smooth RTP timing
 
     # Configure mux
     g_streammux.set_property("width", 1280)
@@ -237,6 +247,7 @@ def main(args):
     g_pipeline.add(nvvidconv_postosd)
     g_pipeline.add(caps)
     g_pipeline.add(encoder)
+    g_pipeline.add(queue)
     g_pipeline.add(h264parse)
     g_pipeline.add(rtsp_sink)
 
@@ -260,8 +271,11 @@ def main(args):
     if not caps.link(encoder):
         sys.stderr.write("Failed to link caps → encoder\n")
         return -1
-    if not encoder.link(h264parse):
-        sys.stderr.write("Failed to link encoder → h264parse\n")
+    if not encoder.link(queue):
+        sys.stderr.write("Failed to link encoder → queue\n")
+        return -1
+    if not queue.link(h264parse):
+        sys.stderr.write("Failed to link queue → h264parse\n")
         return -1
     if not h264parse.link(rtsp_sink):
         sys.stderr.write("Failed to link h264parse → rtsp_sink\n")
