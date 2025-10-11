@@ -55,6 +55,65 @@ gboolean sanity_check_plugins(void) {
   return TRUE;
 }
 
+// --- Stream EOS handler for RTSP reconnection
+static void handle_stream_eos(guint stream_id) {
+  g_mutex_lock(&g_state_lock);
+
+  if (stream_id >= 64 || !g_streams[stream_id].in_use) {
+    g_mutex_unlock(&g_state_lock);
+    return;
+  }
+
+  g_streams[stream_id].eos = TRUE;
+  g_streams[stream_id].reconnect_count++;
+
+  LOG_WRN("Stream %u EOS detected (reconnect attempt #%u) - triggering manual reconnection",
+          stream_id, g_streams[stream_id].reconnect_count);
+
+  // Send flush-stop to demux sink pad to clear EOS state
+  gchar *pad_name = g_strdup_printf("sink_%u", stream_id);
+  GstPad *sinkpad = gst_element_get_static_pad(g_demux, pad_name);
+  if (sinkpad) {
+    gboolean sent = gst_pad_send_event(sinkpad, gst_event_new_flush_stop(FALSE));
+    LOG_INF("Sent flush-stop to %s: %s", pad_name, sent ? "OK" : "FAILED");
+    gst_object_unref(sinkpad);
+  } else {
+    LOG_WRN("Could not find pad %s for flush-stop", pad_name);
+  }
+  g_free(pad_name);
+
+  // Warn if stream has failed too many times
+  if (g_streams[stream_id].reconnect_count > 10) {
+    LOG_ERR("Stream %u has failed %u times - may need manual intervention",
+            stream_id, g_streams[stream_id].reconnect_count);
+  }
+
+  // Manual reconnection: add new stream with unique camera_id
+  // Each reconnection gets a new source-id, but we keep outputting to same path
+  gchar *camera_id = g_strdup_printf("s%u_r%u_%ld", stream_id, g_streams[stream_id].reconnect_count, time(NULL));
+  gchar *input_uri = g_strdup_printf("rtsp://34.100.230.7:8554/in_s%u", stream_id);
+
+  LOG_INF("Reconnecting stream %u with camera_id=%s", stream_id, camera_id);
+
+  gchar *add_json = g_strdup_printf(
+    "{\"value\":{\"camera_id\":\"%s\",\"camera_url\":\"%s\",\"change\":\"camera_add\"}}",
+    camera_id, input_uri);
+  gboolean added = nvmulti_rest_post("/api/v1/stream/add", add_json, strlen(add_json));
+  g_free(add_json);
+
+  if (added) {
+    LOG_INF("Reconnection stream added with camera_id=%s", camera_id);
+    g_streams[stream_id].eos = FALSE;  // Clear EOS flag
+  } else {
+    LOG_ERR("Failed to add reconnection stream for %u", stream_id);
+  }
+
+  g_free(camera_id);
+  g_free(input_uri);
+
+  g_mutex_unlock(&g_state_lock);
+}
+
 // --- Bus logging
 static void on_bus_message(GstBus *bus, GstMessage *msg, gpointer user_data) {
   (void)bus; (void)user_data;
@@ -78,6 +137,42 @@ static void on_bus_message(GstBus *bus, GstMessage *msg, gpointer user_data) {
     case GST_MESSAGE_EOS:
       LOG_INF("Pipeline EOS");
       break;
+    case GST_MESSAGE_ELEMENT: {
+      const GstStructure *s = gst_message_get_structure(msg);
+      if (s) {
+        gchar *struct_str = gst_structure_to_string(s);
+        LOG_INF("ELEMENT message from %s: %s", GST_OBJECT_NAME(msg->src), struct_str);
+        g_free(struct_str);
+
+        if (gst_structure_has_name(s, "stream-add")) {
+          guint source_id;
+          if (gst_structure_get_uint(s, "source-id", &source_id)) {
+            LOG_INF("Auto-creating output branch for source-id %u", source_id);
+            gchar *path = NULL, *url = NULL;
+            if (add_branch_and_mount(source_id, &path, &url)) {
+              LOG_INF("Created branch: %s -> %s", path, url);
+              g_free(path); g_free(url);
+            } else {
+              LOG_ERR("Failed to create branch for source-id %u", source_id);
+            }
+          }
+        }
+
+        if (gst_structure_has_name(s, "GstRTSPSrcTimeout")) {
+          LOG_WRN("RTSP timeout detected - triggering manual reconnection");
+          // For now, reconnect camera_id 0 (TODO: map source to camera_id)
+          handle_stream_eos(0);
+        }
+
+        if (gst_structure_has_name(s, "stream-eos")) {
+          guint stream_id;
+          if (gst_structure_get_uint(s, "stream-id", &stream_id)) {
+            handle_stream_eos(stream_id);
+          }
+        }
+      }
+      break;
+    }
     default:
       break;
   }
@@ -211,28 +306,11 @@ gboolean app_setup(const AppConfig *cfg) {
   g_next_index = 0;
   g_push_url_tmpl = cfg->push_url_tmpl; // enable direct RTSP push when set
 
-  // Bootstrap branches if the pipeline specifies a uri-list.
-  guint bootstrap = 0;
-  {
-    gchar *path = get_pipeline_file_path();
-    gchar *desc = read_file_to_string(path);
-    if (desc) { bootstrap = count_uri_list_items(desc); g_free(desc); }
-    g_free(path);
-  }
-  if (bootstrap > 0) {
-    if (bootstrap > g_max_streams) bootstrap = g_max_streams;
-    for (guint i = 0; i < bootstrap; ++i) {
-      (void)add_branch_and_mount(i, NULL, NULL);
-    }
-    g_next_index = bootstrap;
-    LOG_INF("Bootstrapped %u branch(es) from uri-list", bootstrap);
-  }
+  // No static bootstrap; start with 0 streams; add streams dynamically via nvmultiurisrcbin REST API
+  LOG_INF("Starting with 0 streams; add streams via nvmultiurisrcbin REST API on port 9000");
 
   // Start pipeline after branches are prepared to reduce early data flow warnings
   gst_element_set_state(GST_ELEMENT(pipeline), GST_STATE_PLAYING);
-
-  // Start minimal control API
-  (void)g_thread_new("ctrl_http", control_http_thread, NULL);
 
   // Create main loop + signals
   g_loop = g_main_loop_new(NULL, FALSE);

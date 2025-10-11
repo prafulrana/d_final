@@ -8,6 +8,8 @@
 typedef struct {
   gboolean in_use;
   gboolean enc_is_hw;
+  gboolean eos;         // TRUE if stream has EOS'd (waiting for reconnect)
+  guint reconnect_count; // Number of EOS events for this stream
   char enc_kind[16]; // nvenc, x264, avenc, openh264
   char path[16];     // /sN
   GstElement *queue;

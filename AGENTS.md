@@ -32,9 +32,56 @@ This repo hosts a C-based GStreamer/DeepStream pipeline that pushes H.264 over R
 - Commit style: `Scope: imperative summary` (e.g., `Server: bootstrap branches from uri-list`).
 - PRs must include: change rationale, test steps, configs/envs, and doc updates when behavior changes (`STANDARDS.md`, `STRUCTURE.md`).
 
+## RTSP Reconnection Pattern (Python) - nvurisrcbin Method
+
+**RECOMMENDED**: For Python DeepStream applications with RTSP sources, use **nvurisrcbin** with built-in reconnection:
+
+1. **Use nvurisrcbin (not uridecodebin)**:
+   ```python
+   uri_decode_bin = Gst.ElementFactory.make("nvurisrcbin", "uri-decode-bin")
+   uri_decode_bin.set_property("uri", rtsp_uri)
+   ```
+
+2. **Configure reconnection properties**:
+   ```python
+   uri_decode_bin.set_property("rtsp-reconnect-interval", 10)  # Seconds between retries
+   uri_decode_bin.set_property("init-rtsp-reconnect-interval", 5)  # Initial retry interval
+   uri_decode_bin.set_property("rtsp-reconnect-attempts", -1)  # Infinite retries
+   uri_decode_bin.set_property("select-rtp-protocol", 4)  # TCP-only (avoids UDP timeouts)
+   ```
+
+3. **Wrap in Bin with ghost pad** (NVIDIA pattern from deepstream-test3):
+   ```python
+   nbin = Gst.Bin.new("source-bin-00")
+   Gst.Bin.add(nbin, uri_decode_bin)
+   bin_pad = nbin.add_pad(Gst.GhostPad.new_no_target("src", Gst.PadDirection.SRC))
+
+   # Connect pad-added to set ghost pad target when decoder pad appears
+   uri_decode_bin.connect("pad-added", cb_newpad, nbin)
+   ```
+
+4. **cb_newpad sets ghost pad target**:
+   ```python
+   def cb_newpad(decodebin, decoder_src_pad, source_bin):
+       if features.contains("memory:NVMM"):
+           bin_ghost_pad = source_bin.get_static_pad("src")
+           bin_ghost_pad.set_target(decoder_src_pad)
+   ```
+
+**Key Advantages**:
+- No manual reconnection logic needed
+- Pipeline stays PLAYING throughout
+- nvurisrcbin handles all disconnects internally
+- TCP-only avoids 5-second UDP timeout delays
+- Works with both clean disconnects and abrupt closes
+
+**Reference**: See `/root/d_final/app.py` for complete working implementation
+
 ## Notes for Agents
 - Keep edits within the repo root; align with `STRUCTURE.md` and `STANDARDS.md`.
 - Avoid new frameworks; prefer small, surgical changes to `app.c`, `branch.c`, `control.c`, `config.c`.
+- GCP authentication: If running as root but gcloud/terraform are in prafulrana's home, check `gcloud auth list` FIRST before attempting application-default login. If an account is already authenticated, use `gcloud auth print-access-token` to get a token for Terraform. Export PATH: `export PATH="/usr/bin:/bin:/usr/local/bin:/home/prafulrana/google-cloud-sdk/bin"`.
+- Terraform on Ubuntu: Install from HashiCorp repo: `wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg && echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com noble main" | tee /etc/apt/sources.list.d/hashicorp.list && apt-get update && apt-get install -y terraform`.
 
 ## Common Pitfalls & Checks
 - Ensure remote RTSP host is reachable from the container host.

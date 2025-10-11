@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PATH_REGEX="${path_regex}"
+PATH_REGEX='${path_regex}'
 
 echo "[startup] Installing prerequisites..."
 export DEBIAN_FRONTEND=noninteractive
@@ -31,19 +31,16 @@ webrtcAllowOrigin: "*"
 webrtcLocalUDPAddress: ":8189"
 webrtcLocalTCPAddress: ":8189"
 webrtcIPsFromInterfaces: no
-webrtcAdditionalHosts: ["${PUBLIC_IP}"]
+webrtcAdditionalHosts: ["$${PUBLIC_IP}"]
 webrtcICEServers2: []
 
 # API configuration
 api: yes
 apiAddress: ":9997"
 
-# Path configuration - allow publishing to s0..s63 by default
-pathDefaults:
-  source: publisher
-
+# Path configuration - allow all paths
 paths:
-  "~${PATH_REGEX}": {}
+  all: {}
 EOF
 
 echo "[startup] Starting MediaMTX container..."

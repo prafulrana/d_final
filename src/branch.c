@@ -30,23 +30,11 @@ static gboolean create_elements(guint index, BranchElems *e, gboolean *enc_is_hw
   e->conv_cpu = gst_element_factory_make("nvvideoconvert", NULL);
   e->caps_cpu = gst_element_factory_make("capsfilter", NULL);
 
-  // Encoder selection (HW for first g_hw_threshold)
-  if (index < g_hw_threshold) {
-    e->enc = gst_element_factory_make("nvv4l2h264enc", NULL);
-    *enc_is_hw = (e->enc != NULL);
-  }
+  // Hardware encoder only (nvv4l2h264enc)
+  e->enc = gst_element_factory_make("nvv4l2h264enc", NULL);
+  *enc_is_hw = (e->enc != NULL);
   if (!e->enc) {
-    e->enc = gst_element_factory_make("x264enc", NULL);
-    *enc_is_x264 = (e->enc != NULL);
-    if (*enc_is_x264) LOG_WRN("Using software encoder: x264enc (index=%u)", index);
-  }
-  if (!e->enc) {
-    e->enc = gst_element_factory_make("avenc_h264", NULL);
-    if (e->enc) LOG_WRN("Using software encoder fallback: avenc_h264 (index=%u)", index);
-  }
-  if (!e->enc) {
-    e->enc = gst_element_factory_make("openh264enc", NULL);
-    if (e->enc) LOG_WRN("Using software encoder fallback: openh264enc (index=%u)", index);
+    LOG_ERR("Failed to create nvv4l2h264enc for index=%u; hardware encoder required", index);
   }
 
   e->parse = gst_element_factory_make("h264parse", NULL);
@@ -181,6 +169,8 @@ gboolean add_branch_and_mount(guint index, gchar **out_path, gchar **out_url) {
 
   g_streams[index].in_use = TRUE;
   g_streams[index].enc_is_hw = enc_is_hw;
+  g_streams[index].eos = FALSE;
+  g_streams[index].reconnect_count = 0;
   strncpy(g_streams[index].enc_kind, enc_is_hw ? "nvenc" : (enc_is_x264 ? "x264" : (g_str_has_prefix(G_OBJECT_TYPE_NAME(be.enc), "GstAv") ? "avenc" : "openh264")), sizeof(g_streams[index].enc_kind)-1);
   g_streams[index].enc_kind[sizeof(g_streams[index].enc_kind)-1] = '\0';
   g_snprintf(g_streams[index].path, sizeof(g_streams[index].path), "%s", path);

@@ -1,53 +1,28 @@
 FROM nvcr.io/nvidia/deepstream:8.0-triton-multiarch
 
-# Build minimal C RTSP server (GStreamer + RTSP Server)
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    pkg-config \
-    libgstreamer1.0-dev \
-    libgstreamer-plugins-base1.0-dev \
-    gstreamer1.0-rtsp \
-    gstreamer1.0-plugins-good \
-    gstreamer1.0-plugins-bad \
-    gstreamer1.0-plugins-ugly \
-    gstreamer1.0-libav \
-    libopenh264-7 \
-    gstreamer1.0-tools \
-    libx264-164 \
-    libvpx9 \
-    libmp3lame0 \
-    libflac12t64 \
-    libmpg123-0 \
-    libdvdnav4 \
-    libdvdread8 \
-    libdca0 \
-    mjpegtools \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# Run official Python installation script
+RUN cd /opt/nvidia/deepstream/deepstream-8.0 && \
+    ./user_deepstream_python_apps_install.sh --build-bindings
 
-# Clear GStreamer cache and ensure encoders are discoverable
-RUN rm -rf /root/.cache/gstreamer-1.0 || true
-RUN gst-inspect-1.0 x264enc || gst-inspect-1.0 avenc_h264 || true
+# Enable GStreamer debug logging
+ENV GST_DEBUG=2
+ENV GST_DEBUG_NO_COLOR=1
 
-# Copy application files
-COPY pgie.txt /opt/nvidia/deepstream/deepstream-8.0/pgie.txt
-COPY pipeline.txt /opt/nvidia/deepstream/deepstream-8.0/pipeline.txt
-COPY src /opt/nvidia/deepstream/deepstream-8.0/src
-# Optionally run DeepStream helper if present in base image too
-RUN if [ -x /opt/nvidia/deepstream/deepstream/user_additional_install.sh ]; then \
-      bash /opt/nvidia/deepstream/deepstream/user_additional_install.sh || true; \
-    fi
+WORKDIR /app
+COPY app.py /app/
 
-WORKDIR /opt/nvidia/deepstream/deepstream-8.0
-ENV CTRL_PORT=8080
+# Create models directory and copy ONNX model for TensorRT engine caching
+RUN mkdir -p /models && chmod 777 /models && \
+    cp /opt/nvidia/deepstream/deepstream-8.0/samples/models/Primary_Detector/resnet18_trafficcamnet_pruned.onnx /models/
 
-# Compile app (multi-file, simple layering)
-RUN gcc -O2 -pipe -Wall -Wextra -Isrc -o drishti \
-    src/main.c src/app.c src/config.c src/branch.c src/control.c \
-    $(pkg-config --cflags --libs gstreamer-1.0 glib-2.0)
+# Copy and modify pgie config to use /models for both ONNX and engine
+RUN cp /opt/nvidia/deepstream/deepstream-8.0/sources/apps/sample_apps/deepstream-test1/dstest1_pgie_config.txt /app/pgie_config.txt && \
+    sed -i 's|onnx-file=.*|onnx-file=/models/resnet18_trafficcamnet_pruned.onnx|g' /app/pgie_config.txt && \
+    sed -i 's|model-engine-file=.*|model-engine-file=/models/resnet18_trafficcamnet_pruned.onnx_b1_gpu0_fp16.engine|g' /app/pgie_config.txt && \
+    sed -i 's|labelfile-path=.*|labelfile-path=/opt/nvidia/deepstream/deepstream-8.0/samples/models/Primary_Detector/labels.txt|g' /app/pgie_config.txt && \
+    sed -i 's|int8-calib-file=.*|int8-calib-file=/opt/nvidia/deepstream/deepstream-8.0/samples/models/Primary_Detector/cal_trt.bin|g' /app/pgie_config.txt
 
-# Start app (direct RTSP push via rtspclientsink). Override via env.
-CMD ["/opt/nvidia/deepstream/deepstream-8.0/drishti"]
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:${CTRL_PORT}/status || exit 1
+CMD ["python3", "-u", "/app/app.py", \
+     "-i", "rtsp://34.100.230.7:8554/in_s0", \
+     "-o", "rtsp://34.100.230.7:8554/s0", \
+     "-c", "/app/pgie_config.txt"]
