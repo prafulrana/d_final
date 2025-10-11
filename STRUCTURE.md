@@ -140,6 +140,22 @@ docker rm -f drishti
 # View output at rtsp://server:8554/s0 (with detection boxes)
 ```
 
+## Performance Baseline
+
+**Proven Capability**: This hardware handles 64 concurrent 1080p RTSP streams with full TensorRT inference (TrafficCamNet).
+
+**Therefore**: Any performance issues with a single 720p stream are NOT due to:
+- Resolution being too high
+- Inference being too heavy
+- GPU compute limits
+- Encoding bandwidth
+
+**Actual causes are always**:
+- Configuration (buffer timeouts, queue sizes)
+- Timing (startup delays, engine rebuild)
+- Network (latency, packet loss)
+- Memory management (not using NVMM)
+
 ## Related Projects
 
 This is a simplified single-stream version. For multi-stream batch processing, see:

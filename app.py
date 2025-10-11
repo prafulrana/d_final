@@ -7,7 +7,7 @@ from gi.repository import GLib, Gst
 import argparse
 
 # DeepStream RTSP in -> process -> RTSP out via rtspclientsink
-MUXER_BATCH_TIMEOUT_USEC = 33000
+MUXER_BATCH_TIMEOUT_USEC = 4000000  # 4 seconds for live RTSP sources
 
 # Global state
 g_pipeline = None

@@ -158,9 +158,32 @@ uri_decode_bin.set_property("select-rtp-protocol", 4)              # 4 = TCP-onl
 g_streammux.set_property("width", 1280)
 g_streammux.set_property("height", 720)
 g_streammux.set_property("batch-size", 1)
-g_streammux.set_property("batched-push-timeout", 33000)  # 33ms
+g_streammux.set_property("batched-push-timeout", 4000000)  # 4 seconds for live RTSP
 g_streammux.set_property("live-source", 1)
 ```
+
+**Critical**: `batched-push-timeout` must be 4 seconds (4000000 microseconds) for live RTSP sources to prevent "reader too slow" errors from MediaMTX. Lower values (33ms) cause MediaMTX to drop hundreds of frames during pipeline startup/reconnection and tear down the session.
+
+## Performance Troubleshooting
+
+**Before you change resolution, disable inference, or drop frames**:
+
+1. **Remember the baseline**: This system handles 64 concurrent 1080p streams with inference
+2. **Check configuration first**: 99% of "performance" issues are buffer/timeout misconfigurations
+3. **Verify the actual bottleneck**: Use `nvidia-smi`, `GST_DEBUG=3`, network analysis
+
+**Common mistakes when debugging "slow" pipelines**:
+- ❌ Assuming resolution is too high → It's not, we handle 1080p @ 64x
+- ❌ Disabling inference to "test" → Masks the real issue, defeats purpose
+- ❌ Reducing bitrate → Encoding is GPU-accelerated, not the bottleneck
+- ❌ Dropping frames at source → Doesn't fix timing issues
+
+**Actual fixes (in order of likelihood)**:
+1. Increase `batched-push-timeout` to 4000000 (4 seconds)
+2. Check TensorRT engine is cached (not rebuilding every run)
+3. Verify NVMM memory is being used (check `cb_newpad` logs)
+4. Check network latency/packet loss to RTSP server
+5. Only then: Profile actual GPU/CPU usage
 
 ### rtspclientsink Properties
 

@@ -86,5 +86,40 @@ This repo hosts a C-based GStreamer/DeepStream pipeline that pushes H.264 over R
 ## Common Pitfalls & Checks
 - Ensure remote RTSP host is reachable from the container host.
 - Encoder props: `nvv4l2h264enc` varies by platform. Guard property sets with `g_object_class_find_property` (no hard-coded `maxperf-enable`).
-- Startup order: create/mount branches before setting pipeline to `PLAYING` to avoid “data flow before segment” warnings.
+- Startup order: create/mount branches before setting pipeline to `PLAYING` to avoid "data flow before segment" warnings.
 - File inputs: in `pipeline.txt`, prefer `sync-inputs=true` and a larger `batched-push-timeout` for file URIs; align `pgie` batch-size/engine with `uri-list` or expect an engine rebuild.
+
+## Performance Debugging: Don't Assume the Obvious
+
+**Core Principle**: DeepStream has been proven to handle 64 concurrent 1080p streams with inference on this hardware. If a single 720p stream is failing, the issue is NOT raw performance - it's configuration or timing.
+
+**When you see "reader too slow" or dropped frames**:
+
+1. **Check buffer/timeout settings FIRST**:
+   - `batched-push-timeout` (4000000 for live RTSP)
+   - Queue properties (`max-size-buffers`, `max-size-time`)
+   - Source buffering settings
+
+2. **Check startup/state transitions**:
+   - Is pipeline reaching PLAYING state?
+   - Are elements prerolling correctly?
+   - Is TensorRT engine cached or rebuilding?
+
+3. **Check for actual bottlenecks**:
+   - GPU utilization (`nvidia-smi`)
+   - CPU usage per pipeline element (`GST_DEBUG=3`)
+   - Network bandwidth/latency
+
+**What NOT to do (unless you've proven the bottleneck)**:
+- ❌ **Reduce resolution** - We handle 1080p @ 64 streams, 720p is trivial
+- ❌ **Disable inference** - Defeats the purpose, not the bottleneck
+- ❌ **Drop frames** - Wastes compute, doesn't fix timing issues
+- ❌ **Lower bitrate** - Encoding is GPU-accelerated, not the bottleneck
+- ❌ **Reduce concurrent streams** - This is a single-stream pipeline
+
+**Common Root Causes** (in order of likelihood):
+1. Buffer timeout too aggressive for pipeline warmup
+2. TensorRT engine rebuilding on every run (missing volume mount)
+3. Network issues (TCP retries, packet loss)
+4. Wrong memory type (not using NVMM)
+5. Actual compute bottleneck (check GPU utilization - unlikely)
