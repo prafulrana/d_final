@@ -18,14 +18,12 @@ cat >/etc/mediamtx/config.yml <<EOF
 # Logging
 logLevel: info
 
-# RTSP configuration
+# RTSP / HLS / RTMP (defaults enabled by the container)
 rtsp: yes
-
-# HLS / RTMP (defaults enabled)
 hls: yes
 rtmp: yes
 
-# WebRTC configuration - reduced gather timeouts for faster connection
+# WebRTC configuration
 webrtc: yes
 webrtcAddress: ":8889"
 webrtcEncryption: no
@@ -33,17 +31,17 @@ webrtcAllowOrigin: "*"
 webrtcLocalUDPAddress: ":8189"
 webrtcLocalTCPAddress: ":8189"
 webrtcIPsFromInterfaces: no
-webrtcAdditionalHosts: ["${PUBLIC_IP}"]
+webrtcAdditionalHosts: ["$${PUBLIC_IP}"]
 webrtcICEServers2: []
-webrtcHandshakeTimeout: 5s
-webrtcTrackGatherTimeout: 1s
-webrtcSTUNGatherTimeout: 2s
 
 # API configuration
 api: yes
 apiAddress: ":9997"
 
-# Path configuration - allow all paths
+# Path configuration - allow publishing to s0..s63 by default
+pathDefaults:
+  source: publisher
+
 paths:
   all: {}
 EOF
