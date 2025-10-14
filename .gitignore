@@ -3,8 +3,10 @@ outputs/
 node_modules/
 *.log
 *.swp
-models/
 *.pyc
 __pycache__/
 .terraform/
 terraform.tfstate*
+
+# TensorRT engine cache (generated per GPU, don't commit)
+models/*.engine

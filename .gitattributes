@@ -1,0 +1,4 @@
+models/*.onnx filter=lfs diff=lfs merge=lfs -text
+models/*.etlt filter=lfs diff=lfs merge=lfs -text
+models/*.tflite filter=lfs diff=lfs merge=lfs -text
+models/*.zip filter=lfs diff=lfs merge=lfs -text
