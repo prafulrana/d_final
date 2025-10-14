@@ -1,0 +1,16 @@
+[property]
+gpu-id=0
+net-scale-factor=0.0039215697906911373
+onnx-file=/models/peoplesemsegnet_shuffleseg.onnx
+model-engine-file=/models/peoplesemsegnet_shuffleseg.onnx_b1_gpu0_int8.engine
+infer-dims=3;544;960
+uff-input-blob-name=input_2:0
+batch-size=1
+process-mode=1
+model-color-format=0
+network-mode=1
+num-detected-classes=2
+segmentation-threshold=0.5
+gie-unique-id=1
+network-type=2
+output-blob-names=softmax_1

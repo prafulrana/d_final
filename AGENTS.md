@@ -5,17 +5,18 @@ This repo hosts a **Python-based single-stream DeepStream pipeline** that proces
 ## Project Structure & Modules
 - `app.py` — Main Python application: nvurisrcbin → nvstreammux → nvinfer → OSD → encoder → rtspclientsink
 - `Dockerfile` — DeepStream 8.0 Python environment with TensorRT engine caching
-- `up.sh` — Build and run script (creates named container `drishti`)
+- `up.sh` — Multi-pipeline orchestration script (runs 6 concurrent inference containers)
 - `models/` — Persistent TensorRT engine cache (volume mounted)
+- `config/` — nvinfer configurations for different models (TrafficCamNet, PeopleNet, Segmentation, etc.)
 - `relay/` — MediaMTX relay server configuration (GCP VM). Default zone: `asia-south1-c`
-- `pgie_config.txt` — nvinfer configuration for TrafficCamNet ONNX model
 - `STANDARDS.md`, `STRUCTURE.md` — Build/test/debug documentation
 
 ## Build, Test, Run
-- Build & Run: `./up.sh` (builds `ds_python:latest`, runs as `drishti` container)
-- View logs: `docker logs -f drishti`
+- Build & Run: `./up.sh` (builds `ds_python:latest`, runs 6 concurrent pipelines: `drishti-s0` through `drishti-s5`)
+- View logs: `docker logs -f drishti-s0` (or s1, s2, s3, s4, s5)
+- Monitor all: `docker ps --filter ancestor=ds_python:latest`
 - Publish test stream: Use Larix app or `gst-launch-1.0` to `rtsp://server:8554/in_s0`
-- View output: `ffplay -rtsp_transport tcp rtsp://server:8554/s0`
+- View outputs: `http://server:8889/s0/` (or s1, s2, s3, s4, s5 via WebRTC)
 - Relay deploy: `cd relay && terraform init && terraform apply -var project_id=<GCP_PROJECT>`
 
 ## Coding Style & Conventions
@@ -26,11 +27,27 @@ This repo hosts a **Python-based single-stream DeepStream pipeline** that proces
 - Keep functions focused with early returns
 
 ## Testing Guidelines
-- **Initial connection test**: Publish to `in_s0`, verify output at `s0`, check logs for "Pipeline is PLAYING"
+- **Initial connection test**: Publish to `in_s0`, verify outputs at `s0`-`s5`, check logs for "Pipeline is PLAYING"
 - **Reconnection test**: Stop publisher, wait ~10s for reconnect logs, restart publisher, verify auto-recovery
-- **Video quality test**: Compare smoothness of `in_s0` vs `s0` - output should match input quality
-- **Performance test**: Verify startup time <10s with cached TensorRT engine
+- **Video quality test**: Compare smoothness of `in_s0` vs all outputs - outputs should match input quality
+- **Performance test**: Verify startup time <10s with cached TensorRT engine (first pipeline), concurrent startup for others
+- **Multi-pipeline test**: Verify all 6 pipelines run concurrently without GPU exhaustion (proven to handle 168+ streams)
 - Include logs and minimal repro for any pipeline or encoder changes
+
+## Multi-Pipeline Architecture
+- **Input**: Single RTSP stream at `rtsp://relay:8554/in_s0`
+- **Output**: 6 concurrent RTSP streams at `rtsp://relay:8554/s{0-5}`
+- **Models**: Each pipeline uses different inference config from `/config/`
+  - `s0`: ResNet Traffic (FP16) - 4 classes (Vehicle, Person, RoadSign, TwoWheeler)
+  - `s1`: PeopleNet (INT8) - 3 classes (Person, Bag, Face)
+  - `s2`: ResNet Detector (FP16) - General object detection
+  - `s3`: City Segmentation (FP16) - 19 classes, semantic segmentation
+  - `s4`: People Segmentation (Triton) - People semantic segmentation
+  - `s5`: Default Test1 (FP16) - TrafficCamNet reference
+- **GPU Sharing**: All 6 pipelines share single GPU via `--gpus all`
+- **Volume Mounts**:
+  - `-v $(pwd)/models:/models` - TensorRT engine cache (CRITICAL: use `$(pwd)` not `$PWD`)
+  - `-v $(pwd)/config:/config` - Inference configs for different models
 
 ## Commits & Pull Requests
 - Commit style: `scope: imperative summary` (e.g., `app: add queue element for smooth RTSP output`)
@@ -97,7 +114,133 @@ This repo hosts a **Python-based single-stream DeepStream pipeline** that proces
 - **Don't confuse lag with choppiness** - Lag is latency (seconds), choppy is frame stuttering (buffering/timing issue)
 - **TCP-only for both input/output** - `select-rtp-protocol=4` on nvurisrcbin, `protocols=0x00000004` on rtspclientsink
 - **TensorRT engine caching** - Mount `/models` volume to avoid 30+ second rebuilds on every restart
+- **Volume mount syntax** - CRITICAL: Use `$(pwd)` not `$PWD` in up.sh, otherwise mount fails silently
 - **Ensure NVMM memory** - Check `cb_newpad` logs for "memory:NVMM" features, otherwise GPU decode failed
+- **MediaMTX WebRTC timeouts** - Keep ICE/STUN/TURN timeout settings, removing them causes "reader too slow" issues
+
+## Development Workflow: Fast Iteration
+
+**Python file changes DO NOT require rebuild** - Python is interpreted, just restart container:
+```bash
+# After editing app.py or probe_*.py:
+docker restart drishti-s2  # Changes take effect immediately (volume mounted)
+```
+
+**When rebuild IS required**:
+- CUDA changes (`*.cu`, `build_cuda.sh`) → `./build.sh && ./up.sh`
+- Dockerfile changes → `./build.sh && ./up.sh`
+- Config changes (`config/*.txt`) → Just restart (volume mounted)
+
+**Volume mounts for fast iteration** (already configured in `up.sh`):
+```bash
+-v "$(pwd)/app.py":/app/app.py                          # Main pipeline code
+-v "$(pwd)/probe_default.py":/app/probe_default.py     # Probe modules
+-v "$(pwd)/probe_yoloworld.py":/app/probe_yoloworld.py
+-v "$(pwd)/probe_segmentation.py":/app/probe_segmentation.py
+-v "$(pwd)/models":/models                              # TensorRT cache
+-v "$(pwd)/config":/config                              # Inference configs
+```
+
+**Important**: Python bytecode caching can cause stale imports. If code changes don't take effect after restart:
+```bash
+docker exec drishti-s2 find /app -name "*.pyc" -delete
+docker restart drishti-s2
+```
+
+## Pipeline Order & Probe Attachment: CRITICAL
+
+**Correct pipeline order** (applies to ALL probe types):
+```
+pgie → nvvidconv (NV12→RGBA) → nvosd → rgba_caps → nvvidconv_postosd (RGBA→I420) → encoder
+```
+
+**Why this order matters**:
+1. **pgie** outputs NV12 format
+2. **nvvidconv** converts to RGBA (required for nvosd drawing in CPU mode)
+3. **nvosd** draws bounding boxes and text on RGBA, AND finalizes segmentation metadata
+4. **rgba_caps** ensures RGBA for probes
+5. **nvvidconv_postosd** converts to I420 for encoder
+
+**WRONG order** (causes no boxes to show): `pgie → nvosd → nvvidconv` (nvosd receives NV12, can't draw)
+
+## Probe Attachment Patterns
+
+Different probe types need different attachment points:
+
+**Pattern 1: Custom tensor parsing (probe_yoloworld)**
+- Probe must run BEFORE nvosd to add obj_meta for nvosd to draw
+- Attach to: `nvvidconv.get_static_pad("src")` (right before nvosd input)
+- Example: YOLOWorld custom tensor output parsing
+
+**Pattern 2: Segmentation overlay (probe_segmentation)**
+- Probe must run AFTER nvosd to access finalized segmentation metadata
+- Attach to: `rgba_caps.get_static_pad("sink")` (after nvosd output)
+- Example: Custom CUDA segmentation overlay
+
+**Pattern 3: Default/no-op (probe_default)**
+- Doesn't matter, can attach anywhere
+- Typically attach after nvosd for consistency
+
+**Implementation in app.py**:
+```python
+if args.probe == "probe_yoloworld":
+    nvvidconv_srcpad = nvvidconv.get_static_pad("src")
+    nvvidconv_srcpad.add_probe(Gst.PadProbeType.BUFFER, probe_module.osd_sink_pad_buffer_probe, 0)
+else:
+    rgba_sinkpad = rgba_caps.get_static_pad("sink")
+    rgba_sinkpad.add_probe(Gst.PadProbeType.BUFFER, probe_module.osd_sink_pad_buffer_probe, 0)
+```
+
+## Custom CUDA Overlays: Segmentation
+
+**When implementing custom CUDA overlays on segmentation masks**:
+
+1. **Pipeline order**: Follow the standard order above (nvvidconv BEFORE nvosd)
+
+2. **nvosd required**: Even if not using it for drawing, nvosd processes/finalizes segmentation metadata from nvinfer
+
+3. **Data type conversion** - Segmentation masks from DeepStream are int32, CUDA kernels typically expect uint8:
+   ```python
+   masks = pyds.get_segmentation_masks(seg_meta)
+   mask_array = np.array(masks, copy=True, order='C')
+   mask_array = mask_array.astype(np.uint8)  # Convert int32 → uint8 for CUDA
+   ```
+
+4. **Mask values**: Binary segmentation (person/background) has values 0 (background) and 1 (foreground class)
+
+5. **Common failure modes**:
+   - All mask values are 0 → nvosd not in pipeline OR segmentation threshold too high
+   - Sparse/offset overlay → Coordinate scaling mismatch between mask resolution and frame resolution
+   - Random dots/garbage → Data type mismatch (int32 read as uint8) or stride issues
+
+## YOLOWorld / Custom Tensor Parsing
+
+**Issue**: DeepStream's `maintain-aspect-ratio=1` letterboxing may not match model's expectations
+
+**Symptoms**:
+- Wrong coordinates (boxes offset)
+- Only certain classes detected (e.g., only bus, not person/car)
+- Boxes in wrong positions
+
+**Solution**: Use `maintain-aspect-ratio=0` for simple resize, then scale coordinates directly:
+
+```python
+# In config file:
+maintain-aspect-ratio=0
+
+# In probe:
+net_w, net_h = 640, 640
+scale_x = frame_width / net_w
+scale_y = frame_height / net_h
+
+# Direct scaling (NO letterbox unmapping):
+x1 = x1 * scale_x
+y1 = y1 * scale_y
+x2 = x2 * scale_x
+y2 = y2 * scale_y
+```
+
+**Don't use letterbox unmapping** with DeepStream's `maintain-aspect-ratio=1` unless you can verify the exact padding behavior matches your calculation.
 
 ## Performance Debugging: Don't Assume the Obvious
 

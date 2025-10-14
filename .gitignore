@@ -1,5 +1,10 @@
 outputs/
 *.mp4
 node_modules/
-*.log*.swp
+*.log
+*.swp
 models/
+*.pyc
+__pycache__/
+.terraform/
+terraform.tfstate*

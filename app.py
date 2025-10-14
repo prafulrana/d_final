@@ -116,9 +116,13 @@ def main(args):
     rtsp_out = args.output
     pgie_config = args.config
 
+    # Import probe module
+    probe_module = __import__(args.probe)
+
     print(f"RTSP Input: {rtsp_in}")
     print(f"RTSP Output: {rtsp_out}")
     print(f"Inference config: {pgie_config}")
+    print(f"Probe module: {args.probe}")
 
     # Initialize GStreamer
     Gst.init(None)
@@ -167,6 +171,8 @@ def main(args):
         sys.stderr.write("Unable to create nvinfer\n")
         return -1
 
+    # nvsegvisual removed - using custom CUDA overlay in probe instead
+
     # Create OSD
     print("Creating nvdsosd")
     nvosd = Gst.ElementFactory.make("nvdsosd", "onscreendisplay")
@@ -174,12 +180,21 @@ def main(args):
         sys.stderr.write("Unable to create nvosd\n")
         return -1
 
-    # Create video converter (pre-OSD)
+
+    # Create video converter to ensure RGBA format for probe
     print("Creating nvvideoconvert")
     nvvidconv = Gst.ElementFactory.make("nvvideoconvert", "convertor")
     if not nvvidconv:
         sys.stderr.write("Unable to create nvvideoconvert\n")
         return -1
+
+    # Create capsfilter to force RGBA format before probe
+    print("Creating RGBA capsfilter")
+    rgba_caps = Gst.ElementFactory.make("capsfilter", "rgba_caps")
+    if not rgba_caps:
+        sys.stderr.write("Unable to create rgba_caps\n")
+        return -1
+    rgba_caps.set_property("caps", Gst.Caps.from_string("video/x-raw(memory:NVMM), format=RGBA"))
 
     # Create video converter (post-OSD for format conversion to encoder)
     print("Creating nvvideoconvert-postosd")
@@ -229,7 +244,7 @@ def main(args):
     rtsp_sink.set_property("protocols", 0x00000004)  # TCP only
     rtsp_sink.set_property("latency", 200)  # 200ms buffer for smooth RTP timing
 
-    # Configure mux
+    # Configure mux - set to 1280x720 to match Larix stream
     g_streammux.set_property("width", 1280)
     g_streammux.set_property("height", 720)
     g_streammux.set_property("batch-size", 1)
@@ -244,6 +259,7 @@ def main(args):
     g_pipeline.add(pgie)
     g_pipeline.add(nvvidconv)
     g_pipeline.add(nvosd)
+    g_pipeline.add(rgba_caps)
     g_pipeline.add(nvvidconv_postosd)
     g_pipeline.add(caps)
     g_pipeline.add(encoder)
@@ -251,7 +267,7 @@ def main(args):
     g_pipeline.add(h264parse)
     g_pipeline.add(rtsp_sink)
 
-    # Link pipeline
+    # Link pipeline: pgie → nvvidconv → nvosd → rgba_caps (probe here) → nvvidconv_postosd → encoder → rtsp
     print("Linking elements")
     if not g_streammux.link(pgie):
         sys.stderr.write("Failed to link streammux → pgie\n")
@@ -262,8 +278,11 @@ def main(args):
     if not nvvidconv.link(nvosd):
         sys.stderr.write("Failed to link nvvidconv → nvosd\n")
         return -1
-    if not nvosd.link(nvvidconv_postosd):
-        sys.stderr.write("Failed to link nvosd → nvvidconv_postosd\n")
+    if not nvosd.link(rgba_caps):
+        sys.stderr.write("Failed to link nvosd → rgba_caps\n")
+        return -1
+    if not rgba_caps.link(nvvidconv_postosd):
+        sys.stderr.write("Failed to link rgba_caps → nvvidconv_postosd\n")
         return -1
     if not nvvidconv_postosd.link(caps):
         sys.stderr.write("Failed to link nvvidconv_postosd → caps\n")
@@ -281,6 +300,20 @@ def main(args):
         sys.stderr.write("Failed to link h264parse → rtsp_sink\n")
         return -1
     print("All elements linked successfully")
+
+    # Add probe based on probe module type
+    # probe_yoloworld needs to run BEFORE nvosd (to add obj_meta for nvosd to draw)
+    # probe_segmentation needs to run AFTER nvosd (to access finalized segmentation metadata)
+    if args.probe == "probe_yoloworld":
+        # Attach probe to nvvidconv src pad (= nvosd sink pad, BEFORE nvosd processes)
+        nvvidconv_srcpad = nvvidconv.get_static_pad("src")
+        if nvvidconv_srcpad:
+            nvvidconv_srcpad.add_probe(Gst.PadProbeType.BUFFER, probe_module.osd_sink_pad_buffer_probe, 0)
+    else:
+        # Attach probe to rgba_caps sink pad (AFTER nvosd)
+        rgba_sinkpad = rgba_caps.get_static_pad("sink")
+        if rgba_sinkpad:
+            rgba_sinkpad.add_probe(Gst.PadProbeType.BUFFER, probe_module.osd_sink_pad_buffer_probe, 0)
 
     # Create event loop
     loop = GLib.MainLoop()
@@ -320,6 +353,8 @@ def parse_args():
                         help="RTSP output URL (e.g., rtsp://server:8554/s0)")
     parser.add_argument("-c", "--config", default="/opt/nvidia/deepstream/deepstream-8.0/pgie.txt",
                         help="Path to nvinfer config file")
+    parser.add_argument("--probe", default="probe_default",
+                        help="Probe module name (probe_default, probe_yoloworld, etc.)")
 
     if len(sys.argv) == 1:
         parser.print_help(sys.stderr)

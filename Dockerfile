@@ -4,12 +4,31 @@ FROM nvcr.io/nvidia/deepstream:8.0-triton-multiarch
 RUN cd /opt/nvidia/deepstream/deepstream-8.0 && \
     ./user_deepstream_python_apps_install.sh --build-bindings
 
+# Add pyds to Python path
+ENV PYTHONPATH=/opt/nvidia/deepstream/deepstream-8.0/sources/deepstream_python_apps/pyds/lib/python3.12/site-packages:$PYTHONPATH
+
 # Enable GStreamer debug logging
 ENV GST_DEBUG=2
 ENV GST_DEBUG_NO_COLOR=1
 
 WORKDIR /app
+
+# Install pycuda for GPU operations in probe
+RUN pip3 install pycuda
+
+# Copy and build CUDA kernel (changes rarely)
+COPY segmentation_overlay.cu /app/
+COPY build_cuda.sh /app/
+RUN cd /app && bash build_cuda.sh
+
+# Copy Python files last (change frequently)
 COPY app.py /app/
+COPY probe_default.py /app/
+COPY probe_yoloworld.py /app/
+COPY probe_segmentation.py /app/
+
+# Install nvsegvisual plugin (part of deepstream-segmentation-analytics)
+# This is included in the base DeepStream image
 
 # Create models directory and copy ONNX model for TensorRT engine caching
 RUN mkdir -p /models && chmod 777 /models && \

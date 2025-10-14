@@ -49,15 +49,22 @@ Based on `nvcr.io/nvidia/deepstream:8.0-triton-multiarch`:
 - Runs app.py with hardcoded RTSP URLs (can override via CMD)
 
 ### up.sh
-Orchestration script:
+Multi-pipeline orchestration script:
 - Builds Docker image: `ds_python:latest`
-- Cleans up old containers by name: `drishti`
-- Kills any orphaned containers using the image
-- Runs container in detached mode with:
-  - Named: `drishti`
-  - GPU access: `--gpus all`
+- Cleans up all old containers using the image
+- Runs **6 concurrent inference pipelines** on single input stream:
+  - **drishti-s0**: ResNet Traffic → s0
+  - **drishti-s1**: PeopleNet INT8 → s1
+  - **drishti-s2**: ResNet Detector → s2
+  - **drishti-s3**: City Segmentation → s3
+  - **drishti-s4**: People Segmentation → s4
+  - **drishti-s5**: Default Test1 → s5
+- Each container:
+  - GPU access: `--gpus all` (shared GPU)
   - Network: `--network host`
-  - Volume: `-v $PWD/models:/models` (engine persistence)
+  - Volumes: `-v models:/models` (TensorRT cache), `-v config:/config` (inference configs)
+  - Reads from: `rtsp://relay:8554/in_s0`
+  - Publishes to: `rtsp://relay:8554/s{0-5}`
 
 ### models/
 Persistent directory (volume mounted from host):
