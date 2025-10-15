@@ -31,7 +31,9 @@ typedef enum {
     FLOAT = 0,
     HALF = 1,
     INT8 = 2,
-    INT32 = 3
+    INT32 = 3,
+    UINT8 = 4,
+    INT64 = 5
 } NvDsInferDataType;
 
 typedef struct {
