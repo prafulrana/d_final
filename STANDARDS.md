@@ -10,10 +10,10 @@
 ./build.sh && ./up.sh        # Rebuild and restart pipeline
 
 # Check logs:
-docker logs -f drishti-s5
+docker logs -f drishti-s4
 
 # View output:
-http://RELAY_IP:8889/s5/
+http://RELAY_IP:8889/s4/
 ```
 
 ## Fast Iteration for Config Changes
@@ -21,8 +21,8 @@ http://RELAY_IP:8889/s5/
 Config files are **volume mounted**, no rebuild needed:
 
 ```bash
-# After editing config/pgie_peoplesegnet.txt:
-docker restart drishti-s5      # Changes take effect immediately
+# After editing config/pgie_peoplesemseg_onnx.txt:
+docker restart drishti-s4      # Changes take effect immediately
 ```
 
 ## C++ Changes Require Rebuild
@@ -168,5 +168,5 @@ git lfs pull
 
 **For config changes:** Just restart (volume mounted)
 ```bash
-docker restart drishti-s5
+docker restart drishti-s4
 ```

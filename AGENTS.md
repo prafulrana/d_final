@@ -8,18 +8,18 @@ This repo hosts a **pure C++ DeepStream pipeline** for zero-copy GPU segmentatio
 - `segmentation_overlay_direct.cu` — CUDA kernels for GPU-only overlay and int→float conversion
 - `build_app.sh` — Builds C++ application with CUDA kernels
 - `Dockerfile` — DeepStream 8.0 C++ environment with CUDA compilation
-- `up.sh` — Pipeline orchestration script (runs s5 PeopleSegNet pipeline)
+- `up.sh` — Pipeline orchestration script (runs s4 PeopleSemSegNet ONNX pipeline)
 - `models/` — Persistent TensorRT engine cache (volume mounted)
-- `config/` — nvinfer configurations (PeopleSegNet segmentation)
+- `config/` — nvinfer configurations (PeopleSemSegNet semantic segmentation)
 - `relay/` — MediaMTX relay server configuration (GCP VM). Default zone: `asia-south1-c`
 - `STANDARDS.md`, `STRUCTURE.md` — Build/test/debug documentation
 
 ## Build, Test, Run
-- Build & Run: `./build.sh && ./up.sh` (builds `ds_python:latest`, runs s5 PeopleSegNet pipeline)
-- View logs: `docker logs -f drishti-s5`
-- Monitor: `docker ps --filter name=drishti-s5`
-- Publish test stream: Use Larix app or `gst-launch-1.0` to `rtsp://server:8554/in_s5`
-- View output: `http://server:8889/s5/` (WebRTC)
+- Build & Run: `./build.sh && ./up.sh` (builds `ds_python:latest`, runs s4 PeopleSemSegNet ONNX pipeline)
+- View logs: `docker logs -f drishti-s4`
+- Monitor: `docker ps --filter name=drishti-s4`
+- Publish test stream: Use Larix app or `gst-launch-1.0` to `rtsp://server:8554/in_s4`
+- View output: `http://server:8889/s4/` (WebRTC)
 - Relay deploy: `cd relay && terraform init && terraform apply -var project_id=<GCP_PROJECT>`
 
 ## Coding Style & Conventions
@@ -31,22 +31,23 @@ This repo hosts a **pure C++ DeepStream pipeline** for zero-copy GPU segmentatio
 - CUDA kernels follow standard NVIDIA patterns (16x16 thread blocks)
 
 ## Testing Guidelines
-- **Initial connection test**: Publish to `in_s5`, verify output at `s5`, check logs for "Pipeline is PLAYING"
+- **Initial connection test**: Publish to `in_s4`, verify output at `s4`, check logs for "Pipeline is PLAYING"
 - **Reconnection test**: Stop publisher, wait ~10s for reconnect logs, restart publisher, verify auto-recovery
-- **Video quality test**: Compare smoothness of `in_s5` vs input - output should match input quality
+- **Video quality test**: Compare smoothness of `in_s4` vs input - output should match input quality
 - **Performance test**: Verify startup time <10s with cached TensorRT engine, CPU usage <5%
-- **Segmentation test**: Verify green overlay appears on detected people (head-to-toe coverage)
+- **Segmentation test**: Verify green overlay appears on detected people (excellent mask coverage)
 - Include logs and minimal repro for any pipeline or CUDA kernel changes
 
 ## Pure C++ Architecture
-- **Input**: Single RTSP stream at `rtsp://relay:8554/in_s5`
-- **Output**: Single RTSP stream at `rtsp://relay:8554/s5`
-- **Model**: PeopleSegNet (peoplesemsegnet_shuffleseg.onnx) - Binary segmentation (background, person)
+- **Input**: Single RTSP stream at `rtsp://relay:8554/in_s4`
+- **Output**: Single RTSP stream at `rtsp://relay:8554/s4`
+- **Model**: PeopleSemSegNet ONNX (peoplesemsegnet_shuffleseg.onnx) - Semantic segmentation (background, person)
+- **Config**: network-type=2 with NvDsInferParseCustomPeopleSemSegNet parser
 - **Processing**: Zero-copy GPU segmentation overlay with custom CUDA kernels
 - **Performance**: <5% CPU usage, all processing on GPU
 - **Volume Mounts**:
   - `-v $(pwd)/models:/models` - TensorRT engine cache (CRITICAL: use `$(pwd)` not `$PWD`)
-  - `-v $(pwd)/config:/config` - Inference config (pgie_peoplesegnet.txt)
+  - `-v $(pwd)/config:/config` - Inference config (pgie_peoplesemseg_onnx.txt)
 
 ## Commits & Pull Requests
 - Commit style: `scope: imperative summary` (e.g., `app: add queue element for smooth RTSP output`)
@@ -132,15 +133,15 @@ This repo hosts a **pure C++ DeepStream pipeline** for zero-copy GPU segmentatio
 ```
 
 **When rebuild IS NOT required**:
-- Config changes (`config/pgie_peoplesegnet.txt`) → Just restart (volume mounted):
+- Config changes (`config/pgie_peoplesemseg_onnx.txt`) → Just restart (volume mounted):
 ```bash
-docker restart drishti-s5
+docker restart drishti-s4
 ```
 
 **Volume mounts** (configured in `up.sh`):
 ```bash
 -v "$(pwd)/models":/models   # TensorRT cache
--v "$(pwd)/config":/config   # Inference config (can modify without rebuild)
+-v "$(pwd)/config":/config   # Inference config (pgie_peoplesemseg_onnx.txt, can modify without rebuild)
 ```
 
 ## Pipeline Order & Probe Attachment: CRITICAL
@@ -199,13 +200,17 @@ gst_pad_add_probe(rgba_sinkpad, GST_PAD_PROBE_TYPE_BUFFER,
    - `convert_int_to_float`: GPU-only int→float conversion
    - `apply_segmentation_overlay_direct`: Green overlay with alpha blending on person pixels
 
-5. **Segmentation threshold**: Set in config file (pgie_peoplesegnet.txt):
+5. **Segmentation config**: Set in config file (pgie_peoplesemseg_onnx.txt):
    ```ini
-   segmentation-threshold=0.05  # Lower = more complete coverage, higher = less noise
+   network-type=2                                      # Segmentation (not 100 for raw tensors)
+   segmentation-threshold=0.05                         # Lower = more coverage, higher = less noise
+   parse-segmentation-func-name=NvDsInferParseCustomPeopleSemSegNet
+   custom-lib-path=/opt/nvidia/deepstream/deepstream-8.0/lib/libnvds_infercustomparser.so
    ```
 
 6. **Common failure modes**:
-   - All mask values are 0 → nvosd not in pipeline OR segmentation threshold too high
+   - All mask values are 0 → Wrong network-type (use 2, not 100) OR threshold too high
+   - Model outputs zeros → Wrong preprocessing or network-type=100 without proper tensor parsing
    - Sparse/offset overlay → Coordinate scaling mismatch or threshold too high
    - High CPU usage → Not using GPU-only conversion, copying data to CPU
 

@@ -8,12 +8,14 @@ d_final/
 ├── build_app.sh                          # Builds C++ application with CUDA
 ├── Dockerfile                            # DeepStream 8.0 C++ + CUDA build environment
 ├── build.sh                              # Build Docker image
-├── up.sh                                 # Start s5 PeopleSegNet pipeline
+├── up.sh                                 # Start s4 PeopleSemSegNet ONNX pipeline
 ├── config/
-│   └── pgie_peoplesegnet.txt            # PeopleSemSegNet config (s5)
+│   └── pgie_peoplesemseg_onnx.txt       # PeopleSemSegNet ONNX config (s4)
 ├── models/                               # Model files (Git LFS)
-│   ├── peoplesemsegnet_shuffleseg.onnx  # Binary segmentation model
-│   ├── labels.txt
+│   ├── peoplesemsegnet_vdeployable_shuffleseg_unet_onnx_v1.0.1/
+│   │   ├── peoplesemsegnet_shuffleseg.onnx  # Semantic segmentation model (3.8MB)
+│   │   ├── labels.txt
+│   │   └── peoplesemsegnet_shuffleseg_int8.txt
 │   └── *.engine                         # TensorRT cache (not in git)
 ├── relay/                                # MediaMTX relay infrastructure (GCP)
 │   ├── main.tf                          # Terraform config
@@ -29,11 +31,11 @@ d_final/
 
 ### Pure C++ Zero-Copy GPU Pipeline
 
-**Single pipeline** with PeopleSegNet segmentation and custom GPU overlay:
+**Single pipeline** with PeopleSemSegNet ONNX semantic segmentation and custom GPU overlay:
 
 | Pipeline | Model | Implementation | Input | Output | Purpose |
 |----------|-------|----------------|-------|--------|---------|
-| **s5** | PeopleSegNet | Pure C++ + CUDA | `in_s5` | `s5` | Zero-copy GPU segmentation overlay (green overlay on people) |
+| **s4** | PeopleSemSegNet ONNX | Pure C++ + CUDA | `in_s4` | `s4` | Zero-copy GPU semantic segmentation overlay (green overlay on people) |
 
 ### Pipeline Order (CRITICAL)
 
@@ -171,15 +173,15 @@ CUDA kernels for GPU-only processing:
 Single pipeline orchestration script:
 
 ```bash
-# s5: PeopleSegNet segmentation (pure C++ - zero-copy GPU)
-docker run -d --name drishti-s5 --gpus all --rm --network host \
+# s4: PeopleSemSegNet ONNX semantic segmentation (pure C++ - zero-copy GPU)
+docker run -d --name drishti-s4 --gpus all --rm --network host \
   -v "$(pwd)/models":/models \
   -v "$(pwd)/config":/config \
   ds_python:latest \
   /app/deepstream_app \
-  rtsp://RELAY_IP:8554/in_s5 \
-  rtsp://RELAY_IP:8554/s5 \
-  /config/pgie_peoplesegnet.txt
+  rtsp://RELAY_IP:8554/in_s4 \
+  rtsp://RELAY_IP:8554/s4 \
+  /config/pgie_peoplesemseg_onnx.txt
 ```
 
 **Volume Mounts:**
@@ -228,9 +230,13 @@ g++ -o deepstream_app \
 
 ### models/ (Git LFS)
 
-**Active model**:
-- `peoplesemsegnet_shuffleseg.onnx` (3.8MB) - Binary segmentation (background, person)
-- `labels.txt` - Label file for PeopleSemSegNet
+**Active model**: `peoplesemsegnet_vdeployable_shuffleseg_unet_onnx_v1.0.1/`
+- `peoplesemsegnet_shuffleseg.onnx` (3.8MB) - Semantic segmentation (background, person)
+- `labels.txt` - Label file (background, person)
+- `peoplesemsegnet_shuffleseg_int8.txt` - INT8 calibration cache
+- `pgie_unet_tlt_config_peoplesemsegnet_shuffleseg.txt` - NGC-provided reference config
+
+**Model source**: `nvidia/tao/peoplesemsegnet:deployable_shuffleseg_unet_onnx_v1.0.1` from NGC
 
 **TensorRT cache** (generated, not in git):
 - `*.engine` files - GPU-specific, ~5-10s to generate on first run
@@ -256,10 +262,10 @@ Config files are **volume mounted**, just restart:
 
 ```bash
 # Edit config file
-vim config/pgie_peoplesegnet.txt
+vim config/pgie_peoplesemseg_onnx.txt
 
 # Just restart container
-docker restart drishti-s5
+docker restart drishti-s4
 ```
 
 ### Testing Changes
@@ -269,10 +275,10 @@ docker restart drishti-s5
 ./build.sh && ./up.sh
 
 # Check logs
-docker logs -f drishti-s5
+docker logs -f drishti-s4
 
 # View output (WebRTC)
-http://RELAY_IP:8889/s5/
+http://RELAY_IP:8889/s4/
 ```
 
 ## Performance Notes
