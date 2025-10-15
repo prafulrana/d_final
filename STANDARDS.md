@@ -2,36 +2,36 @@
 
 ## Testing Workflow
 
-**ALWAYS use `./up.sh` to test changes. NEVER run docker commands manually.**
+**ALWAYS use `./build.sh && ./up.sh` to test C++ changes.**
 
 ```bash
-# Correct workflow:
-./down.sh      # Stop pipelines
-# Make changes to code/config
-./up.sh        # Rebuild and restart all pipelines
+# Correct workflow for C++ changes:
+# Make changes to main.cpp, probe, or CUDA files
+./build.sh && ./up.sh        # Rebuild and restart pipeline
 
 # Check logs:
-docker logs drishti-s0
-docker logs drishti-s1
-docker logs drishti-s2
+docker logs -f drishti-s5
 
-# View outputs:
-http://RELAY_IP:8889/s0/
-http://RELAY_IP:8889/s1/
-http://RELAY_IP:8889/s2/
+# View output:
+http://RELAY_IP:8889/s5/
 ```
 
-## Fast Iteration for Python Changes
+## Fast Iteration for Config Changes
 
-Python files are **volume mounted**, no rebuild needed:
+Config files are **volume mounted**, no rebuild needed:
 
 ```bash
-# After editing app.py or probe_*.py:
-docker restart drishti-s2      # Changes take effect immediately
+# After editing config/pgie_peoplesegnet.txt:
+docker restart drishti-s5      # Changes take effect immediately
+```
 
-# If changes don't apply (Python bytecode cache):
-docker exec drishti-s2 find /app -name "*.pyc" -delete
-docker restart drishti-s2
+## C++ Changes Require Rebuild
+
+C++ source files are **compiled into the image**:
+
+```bash
+# After editing main.cpp, segmentation_probe_complete.cpp, or *.cu:
+./build.sh && ./up.sh          # Full rebuild required
 ```
 
 ## Pipeline Structure (CRITICAL ORDER)
@@ -51,163 +51,92 @@ nvurisrcbin → nvstreammux → nvinfer → nvvidconv → nvosd → rgba_caps �
 pgie → nvosd → nvvidconv  ❌  (nvosd receives NV12, can't draw)
 ```
 
-## Probe Attachment Patterns
+## Segmentation Probe Pattern (C++)
 
-Different probe types attach at different points in the pipeline:
-
-### Pattern 1: Custom Tensor Parsing (probe_yoloworld)
-
-**When to use:** Model outputs raw tensors that need manual parsing before nvosd can draw
-
-**Attachment point:** `nvvidconv.get_static_pad("src")` (BEFORE nvosd)
-
-**Why:** Must add `obj_meta` before nvosd processes the frame for drawing
-
-**Example:**
-```python
-if args.probe == "probe_yoloworld":
-    nvvidconv_srcpad = nvvidconv.get_static_pad("src")
-    nvvidconv_srcpad.add_probe(Gst.PadProbeType.BUFFER, probe_module.osd_sink_pad_buffer_probe, 0)
-```
-
-**Process flow:**
-1. nvinfer outputs tensor metadata
-2. Probe parses tensor → creates obj_meta
-3. nvosd draws boxes based on obj_meta
-
-### Pattern 2: Segmentation Overlay (probe_segmentation)
-
-**When to use:** Custom visualization of segmentation masks (bypassing nvosd)
+**Current implementation:** Zero-copy GPU segmentation overlay
 
 **Attachment point:** `rgba_caps.get_static_pad("sink")` (AFTER nvosd)
 
 **Why:** Needs finalized segmentation metadata from nvosd
 
-**Example:**
-```python
-else:  # probe_segmentation or probe_default
-    rgba_sinkpad = rgba_caps.get_static_pad("sink")
-    rgba_sinkpad.add_probe(Gst.PadProbeType.BUFFER, probe_module.osd_sink_pad_buffer_probe, 0)
+**Example (main.cpp):**
+```cpp
+// Attach probe AFTER nvosd to access finalized segmentation metadata
+rgba_sinkpad = gst_element_get_static_pad(rgba_caps, "sink");
+gst_pad_add_probe(rgba_sinkpad, GST_PAD_PROBE_TYPE_BUFFER,
+                  segmentation_probe_callback, NULL, NULL);
 ```
 
 **Process flow:**
 1. nvinfer outputs segmentation metadata
 2. nvosd finalizes metadata (required!)
-3. Probe accesses seg_meta → applies custom CUDA overlay
+3. Probe accesses seg_meta → applies zero-copy GPU overlay
 
-### Pattern 3: Default/No-op (probe_default)
-
-**When to use:** Standard detection with nvosd drawing
-
-**Attachment point:** `rgba_caps.get_static_pad("sink")` (AFTER nvosd)
-
-**Why:** Doesn't matter (probe does nothing)
-
-**Example:**
-```python
-def osd_sink_pad_buffer_probe(pad, info, u_data):
-    """Default probe - no custom processing"""
-    return Gst.PadProbeReturn.OK
-```
-
-## Custom Tensor Parsing
-
-### Config Requirements (nvinfer)
+## Segmentation Config Requirements
 
 ```ini
 [property]
-network-type=100          # REQUIRED: Disables built-in parsing
-output-tensor-meta=1      # REQUIRED: Enables tensor metadata
-network-mode=2            # 0=FP32, 1=INT8, 2=FP16
-maintain-aspect-ratio=0   # CRITICAL for YOLOWorld coordinate mapping
+network-type=2                        # Segmentation (not 100 for raw tensors)
+num-detected-classes=2                # Background + person
+segmentation-threshold=0.05           # Lower = more coverage, higher = less noise
+parse-segmentation-func-name=NvDsInferParseCustomPeopleSemSegNet
+custom-lib-path=/opt/nvidia/deepstream/deepstream-8.0/lib/libnvds_infercustomparser.so
 ```
 
-### Tensor Access (Python)
+**Key settings:**
+- `network-type=2`: Enables segmentation metadata output (not raw tensors)
+- `segmentation-threshold`: Balance between coverage and noise (0.05 works well)
+- Custom parser: Converts INT64 model output to segmentation metadata
 
-**WRONG ❌**
-```python
-ptr = pyds.get_ptr(layer.buffer)
+## Zero-Copy GPU Implementation
+
+**C++ probe access pattern (segmentation_probe_complete.cpp):**
+
+```cpp
+// Get GPU frame pointer directly from NvBufSurface
+NvBufSurface *surf = (NvBufSurface *)map_info.data;
+void *frame_gpu_ptr = surf->surfaceList[frame_meta->batch_id].dataPtr;
+
+// Get segmentation metadata (int class_map on CPU)
+NvDsInferSegmentationMeta *seg_meta = (NvDsInferSegmentationMeta *)user_meta->user_meta_data;
+
+// GPU-only int→float conversion (ZERO CPU overhead)
+cudaMalloc((void**)&class_map_gpu, seg_size * sizeof(int));
+cudaMemcpy(class_map_gpu, seg_meta->class_map, seg_size * sizeof(int), cudaMemcpyHostToDevice);
+
+cudaMalloc((void**)&seg_float_gpu, seg_size * sizeof(float));
+convert_classmap_gpu(class_map_gpu, seg_float_gpu, seg_size);  // GPU kernel
+
+// Launch overlay kernel (pure GPU)
+launch_segmentation_overlay_direct(frame_gpu_ptr, seg_float_gpu, ...);
 ```
 
-**CORRECT ✅**
-```python
-# Get base pointer array, then offset by layer index
-ptr_array = pyds.get_ptr(tensor_meta.out_buf_ptrs_host)
-ptr = ctypes.cast(ptr_array, ctypes.POINTER(ctypes.c_void_p))[i]
+**CUDA kernels (segmentation_overlay_direct.cu):**
+- `convert_int_to_float`: GPU-only int→float conversion (no CPU)
+- `apply_segmentation_overlay_direct`: Green overlay with alpha blending
 
-# Create numpy array
-flat_data = np.ctypeslib.as_array(
-    ctypes.cast(ptr, ctypes.POINTER(ctypes.c_float)),
-    shape=(N * 6,)
-)
-detections = flat_data.reshape(N, 6)
-```
+## nvosd Requirement
 
-### YOLOWorld Coordinate Mapping
+**Critical:** Even with custom CUDA overlay, nvosd MUST be in pipeline:
 
-**Issue:** DeepStream's `maintain-aspect-ratio=1` letterboxing doesn't match manual calculation
-
-**Solution:** Use `maintain-aspect-ratio=0` for simple resize:
-
-```ini
-# In config file:
-maintain-aspect-ratio=0
-```
-
-```python
-# In probe (direct scaling, NO letterbox unmapping):
-net_w, net_h = 640, 640
-scale_x = frame_width / net_w
-scale_y = frame_height / net_h
-
-x1 = x1 * scale_x  # NOT: (x1 - padX) / scale
-y1 = y1 * scale_y
-```
-
-**Why:** DeepStream's letterboxing behavior is unpredictable with `maintain-aspect-ratio=1`
-
-## Segmentation Overlay
-
-### Data Type Conversion
-
-Segmentation masks from DeepStream are **int32**, CUDA kernels expect **uint8**:
-
-```python
-masks = pyds.get_segmentation_masks(seg_meta)
-mask_array = np.array(masks, copy=True, order='C')
-mask_array = mask_array.astype(np.uint8)  # Convert int32 → uint8
-```
-
-### nvosd Requirement
-
-**Critical:** Even if using custom CUDA overlay, nvosd MUST be in pipeline:
-
-```python
-# Pipeline: pgie → nvvidconv → nvosd → rgba_caps (probe) → ...
-g_pipeline.add(pgie)
-g_pipeline.add(nvvidconv)
-g_pipeline.add(nvosd)  # REQUIRED - finalizes segmentation metadata
+```cpp
+// Pipeline: pgie → nvvidconv → nvosd → rgba_caps (probe) → ...
+gst_bin_add_many(GST_BIN(pipeline), pgie, nvvidconv, nvosd, rgba_caps, ...);
+gst_element_link_many(nvstreammux, pgie, nvvidconv, nvosd, rgba_caps, ...);
 ```
 
 **Why:** nvosd processes/finalizes segmentation metadata from nvinfer
 
-## Model Input Format
-
-- **NCHW**: `infer-dims=3;256;256` (channels, height, width)
-- **NHWC**: `infer-dims=256;256;3` (height, width, channels)
-- Add `network-input-order=1` for NHWC if needed
-
 ## Common Mistakes to Avoid
 
-1. ❌ Running random docker commands instead of `./up.sh`
+1. ❌ Running docker commands manually instead of `./build.sh && ./up.sh`
 2. ❌ Wrong pipeline order: `pgie → nvosd → nvvidconv` (nvosd needs RGBA)
-3. ❌ Attaching probe_yoloworld AFTER nvosd (obj_meta won't be drawn)
-4. ❌ Using `maintain-aspect-ratio=1` with manual coordinate mapping
-5. ❌ Using `layer.buffer` instead of `out_buf_ptrs_host` for tensor access
-6. ❌ Forgetting `network-type=100` for custom parsing
-7. ❌ Not removing old engine files when changing config
-8. ❌ Removing nvosd from pipeline when using custom segmentation (metadata won't be finalized)
-9. ❌ Not converting int32 mask to uint8 before passing to CUDA
+3. ❌ Forgetting to rebuild after C++ changes (editing without `./build.sh`)
+4. ❌ Using `network-type=100` instead of `network-type=2` for segmentation
+5. ❌ Not removing old engine files when changing config
+6. ❌ Removing nvosd from pipeline when using custom segmentation (metadata won't be finalized)
+7. ❌ Copying segmentation data to CPU for processing (use GPU-only kernels)
+8. ❌ Setting segmentation-threshold too high (causes sparse coverage)
 
 ## Git LFS
 
@@ -232,17 +161,12 @@ git lfs pull
 
 ## Build System
 
-**For Python changes only:** Just restart container
-```bash
-docker restart drishti-s2
-```
-
-**For CUDA/Dockerfile changes:** Full rebuild required
+**For C++ changes (main.cpp, probe, CUDA):** Full rebuild required
 ```bash
 ./build.sh && ./up.sh
 ```
 
 **For config changes:** Just restart (volume mounted)
 ```bash
-docker restart drishti-s2
+docker restart drishti-s5
 ```

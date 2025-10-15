@@ -1,93 +1,96 @@
 # Repository Guidelines
 
-This repo hosts a **Python-based single-stream DeepStream pipeline** that processes RTSP input with inference and outputs to RTSP via rtspclientsink. It uses nvurisrcbin for automatic RTSP reconnection.
+This repo hosts a **pure C++ DeepStream pipeline** for zero-copy GPU segmentation processing. The pipeline processes RTSP input with PeopleSegNet inference and outputs to RTSP via rtspclientsink. All segmentation overlay processing happens directly on GPU without CPU overhead.
 
 ## Project Structure & Modules
-- `app.py` — Main Python application: nvurisrcbin → nvstreammux → nvinfer → OSD → encoder → rtspclientsink
-- `Dockerfile` — DeepStream 8.0 Python environment with TensorRT engine caching
-- `up.sh` — Multi-pipeline orchestration script (runs 6 concurrent inference containers)
+- `main.cpp` — Pure C++ GStreamer application: nvurisrcbin → nvstreammux → nvinfer → OSD → encoder → rtspclientsink
+- `segmentation_probe_complete.cpp` — C++ pad probe for zero-copy GPU segmentation overlay
+- `segmentation_overlay_direct.cu` — CUDA kernels for GPU-only overlay and int→float conversion
+- `build_app.sh` — Builds C++ application with CUDA kernels
+- `Dockerfile` — DeepStream 8.0 C++ environment with CUDA compilation
+- `up.sh` — Pipeline orchestration script (runs s5 PeopleSegNet pipeline)
 - `models/` — Persistent TensorRT engine cache (volume mounted)
-- `config/` — nvinfer configurations for different models (TrafficCamNet, PeopleNet, Segmentation, etc.)
+- `config/` — nvinfer configurations (PeopleSegNet segmentation)
 - `relay/` — MediaMTX relay server configuration (GCP VM). Default zone: `asia-south1-c`
 - `STANDARDS.md`, `STRUCTURE.md` — Build/test/debug documentation
 
 ## Build, Test, Run
-- Build & Run: `./up.sh` (builds `ds_python:latest`, runs 6 concurrent pipelines: `drishti-s0` through `drishti-s5`)
-- View logs: `docker logs -f drishti-s0` (or s1, s2, s3, s4, s5)
-- Monitor all: `docker ps --filter ancestor=ds_python:latest`
-- Publish test stream: Use Larix app or `gst-launch-1.0` to `rtsp://server:8554/in_s0`
-- View outputs: `http://server:8889/s0/` (or s1, s2, s3, s4, s5 via WebRTC)
+- Build & Run: `./build.sh && ./up.sh` (builds `ds_python:latest`, runs s5 PeopleSegNet pipeline)
+- View logs: `docker logs -f drishti-s5`
+- Monitor: `docker ps --filter name=drishti-s5`
+- Publish test stream: Use Larix app or `gst-launch-1.0` to `rtsp://server:8554/in_s5`
+- View output: `http://server:8889/s5/` (WebRTC)
 - Relay deploy: `cd relay && terraform init && terraform apply -var project_id=<GCP_PROJECT>`
 
 ## Coding Style & Conventions
-- Python 3 with GStreamer bindings (`gi.repository.Gst`)
+- Pure C++ with GStreamer C API
 - 4-space indentation, max 100 character lines
-- Follow NVIDIA DeepStream Python sample patterns
-- Use `sys.stderr.write()` for errors, `print()` for info
+- Follow NVIDIA DeepStream C/C++ sample patterns
+- Use `g_print()` for info, `g_printerr()` for errors
 - Keep functions focused with early returns
+- CUDA kernels follow standard NVIDIA patterns (16x16 thread blocks)
 
 ## Testing Guidelines
-- **Initial connection test**: Publish to `in_s0`, verify outputs at `s0`-`s5`, check logs for "Pipeline is PLAYING"
+- **Initial connection test**: Publish to `in_s5`, verify output at `s5`, check logs for "Pipeline is PLAYING"
 - **Reconnection test**: Stop publisher, wait ~10s for reconnect logs, restart publisher, verify auto-recovery
-- **Video quality test**: Compare smoothness of `in_s0` vs all outputs - outputs should match input quality
-- **Performance test**: Verify startup time <10s with cached TensorRT engine (first pipeline), concurrent startup for others
-- **Multi-pipeline test**: Verify all 6 pipelines run concurrently without GPU exhaustion (proven to handle 168+ streams)
-- Include logs and minimal repro for any pipeline or encoder changes
+- **Video quality test**: Compare smoothness of `in_s5` vs input - output should match input quality
+- **Performance test**: Verify startup time <10s with cached TensorRT engine, CPU usage <5%
+- **Segmentation test**: Verify green overlay appears on detected people (head-to-toe coverage)
+- Include logs and minimal repro for any pipeline or CUDA kernel changes
 
-## Multi-Pipeline Architecture
-- **Input**: Single RTSP stream at `rtsp://relay:8554/in_s0`
-- **Output**: 6 concurrent RTSP streams at `rtsp://relay:8554/s{0-5}`
-- **Models**: Each pipeline uses different inference config from `/config/`
-  - `s0`: ResNet Traffic (FP16) - 4 classes (Vehicle, Person, RoadSign, TwoWheeler)
-  - `s1`: PeopleNet (INT8) - 3 classes (Person, Bag, Face)
-  - `s2`: ResNet Detector (FP16) - General object detection
-  - `s3`: City Segmentation (FP16) - 19 classes, semantic segmentation
-  - `s4`: People Segmentation (Triton) - People semantic segmentation
-  - `s5`: Default Test1 (FP16) - TrafficCamNet reference
-- **GPU Sharing**: All 6 pipelines share single GPU via `--gpus all`
+## Pure C++ Architecture
+- **Input**: Single RTSP stream at `rtsp://relay:8554/in_s5`
+- **Output**: Single RTSP stream at `rtsp://relay:8554/s5`
+- **Model**: PeopleSegNet (peoplesemsegnet_shuffleseg.onnx) - Binary segmentation (background, person)
+- **Processing**: Zero-copy GPU segmentation overlay with custom CUDA kernels
+- **Performance**: <5% CPU usage, all processing on GPU
 - **Volume Mounts**:
   - `-v $(pwd)/models:/models` - TensorRT engine cache (CRITICAL: use `$(pwd)` not `$PWD`)
-  - `-v $(pwd)/config:/config` - Inference configs for different models
+  - `-v $(pwd)/config:/config` - Inference config (pgie_peoplesegnet.txt)
 
 ## Commits & Pull Requests
 - Commit style: `scope: imperative summary` (e.g., `app: add queue element for smooth RTSP output`)
 - PRs must include: change rationale, test steps (especially video quality), and doc updates when behavior changes
 - Always test reconnection after modifications
 
-## RTSP Reconnection Pattern (Python) - nvurisrcbin Method
+## RTSP Reconnection Pattern (C++) - nvurisrcbin Method
 
-**RECOMMENDED**: For Python DeepStream applications with RTSP sources, use **nvurisrcbin** with built-in reconnection:
+**RECOMMENDED**: For C++ DeepStream applications with RTSP sources, use **nvurisrcbin** with built-in reconnection:
 
-1. **Use nvurisrcbin (not uridecodebin)**:
-   ```python
-   uri_decode_bin = Gst.ElementFactory.make("nvurisrcbin", "uri-decode-bin")
-   uri_decode_bin.set_property("uri", rtsp_uri)
+1. **Create nvurisrcbin**:
+   ```cpp
+   source = gst_element_factory_make("nvurisrcbin", "source");
+   g_object_set(G_OBJECT(source), "uri", rtsp_in, NULL);
    ```
 
 2. **Configure reconnection properties**:
-   ```python
-   uri_decode_bin.set_property("rtsp-reconnect-interval", 10)  # Seconds between retries
-   uri_decode_bin.set_property("init-rtsp-reconnect-interval", 5)  # Initial retry interval
-   uri_decode_bin.set_property("rtsp-reconnect-attempts", -1)  # Infinite retries
-   uri_decode_bin.set_property("select-rtp-protocol", 4)  # TCP-only (avoids UDP timeouts)
+   ```cpp
+   g_object_set(G_OBJECT(source), "rtsp-reconnect-interval", 10, NULL);  // Seconds between retries
+   g_object_set(G_OBJECT(source), "init-rtsp-reconnect-interval", 5, NULL);  // Initial retry
+   g_object_set(G_OBJECT(source), "rtsp-reconnect-attempts", -1, NULL);  // Infinite retries
+   g_object_set(G_OBJECT(source), "select-rtp-protocol", 4, NULL);  // TCP-only
    ```
 
-3. **Wrap in Bin with ghost pad** (NVIDIA pattern from deepstream-test3):
-   ```python
-   nbin = Gst.Bin.new("source-bin-00")
-   Gst.Bin.add(nbin, uri_decode_bin)
-   bin_pad = nbin.add_pad(Gst.GhostPad.new_no_target("src", Gst.PadDirection.SRC))
+3. **Handle dynamic pads with pad-added callback**:
+   ```cpp
+   typedef struct {
+       GstElement *nvstreammux;
+       int stream_id;
+   } PadData;
 
-   # Connect pad-added to set ghost pad target when decoder pad appears
-   uri_decode_bin.connect("pad-added", cb_newpad, nbin)
+   g_signal_connect(source, "pad-added", G_CALLBACK(on_pad_added), pad_data);
    ```
 
-4. **cb_newpad sets ghost pad target**:
-   ```python
-   def cb_newpad(decodebin, decoder_src_pad, source_bin):
-       if features.contains("memory:NVMM"):
-           bin_ghost_pad = source_bin.get_static_pad("src")
-           bin_ghost_pad.set_target(decoder_src_pad)
+4. **on_pad_added links to nvstreammux**:
+   ```cpp
+   static void on_pad_added(GstElement *element, GstPad *pad, gpointer data) {
+       PadData *pad_data = (PadData *)data;
+       gchar pad_name[16];
+       snprintf(pad_name, 15, "sink_%u", pad_data->stream_id);
+       GstPad *sinkpad = gst_element_request_pad_simple(pad_data->nvstreammux, pad_name);
+       gst_pad_link(pad, sinkpad);
+       gst_object_unref(sinkpad);
+   }
    ```
 
 **Key Advantages**:
@@ -97,13 +100,15 @@ This repo hosts a **Python-based single-stream DeepStream pipeline** that proces
 - TCP-only avoids 5-second UDP timeout delays
 - Works with both clean disconnects and abrupt closes
 
-**Reference**: See `/root/d_final/app.py` for complete working implementation
+**Reference**: See `/root/d_final/main.cpp` for complete working implementation
 
 ## Notes for Agents
 - Keep edits within the repo root; align with `STRUCTURE.md` and `STANDARDS.md`
-- Avoid new frameworks; prefer surgical changes to `app.py`
+- Avoid new frameworks; prefer surgical changes to C++ source files
 - **DO NOT delete researched settings on a whim** - if a configuration was researched and implemented, validate thoroughly before removing
 - **Research first, change second** - especially for encoder/timing/buffer settings
+- **C++ changes require rebuild** - Run `./build.sh && ./up.sh` after modifying main.cpp, probe, or CUDA files
+- **Config changes don't require rebuild** - Just restart container after modifying pgie_peoplesegnet.txt
 - GCP authentication: If running as root but gcloud/terraform are in prafulrana's home, check `gcloud auth list` FIRST before attempting application-default login. If an account is already authenticated, use `gcloud auth print-access-token` to get a token for Terraform. Export PATH: `export PATH="/usr/bin:/bin:/usr/local/bin:/home/prafulrana/google-cloud-sdk/bin"`
 - Terraform on Ubuntu: Install from HashiCorp repo: `wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg && echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com noble main" | tee /etc/apt/sources.list.d/hashicorp.list && apt-get update && apt-get install -y terraform`
 
@@ -120,36 +125,27 @@ This repo hosts a **Python-based single-stream DeepStream pipeline** that proces
 
 ## Development Workflow: Fast Iteration
 
-**Python file changes DO NOT require rebuild** - Python is interpreted, just restart container:
+**C++ file changes REQUIRE rebuild** - Compiled application must be rebuilt:
 ```bash
-# After editing app.py or probe_*.py:
-docker restart drishti-s2  # Changes take effect immediately (volume mounted)
+# After editing main.cpp, segmentation_probe_complete.cpp, or *.cu:
+./build.sh && ./up.sh  # Rebuilds C++ executable and restarts container
 ```
 
-**When rebuild IS required**:
-- CUDA changes (`*.cu`, `build_cuda.sh`) → `./build.sh && ./up.sh`
-- Dockerfile changes → `./build.sh && ./up.sh`
-- Config changes (`config/*.txt`) → Just restart (volume mounted)
-
-**Volume mounts for fast iteration** (already configured in `up.sh`):
+**When rebuild IS NOT required**:
+- Config changes (`config/pgie_peoplesegnet.txt`) → Just restart (volume mounted):
 ```bash
--v "$(pwd)/app.py":/app/app.py                          # Main pipeline code
--v "$(pwd)/probe_default.py":/app/probe_default.py     # Probe modules
--v "$(pwd)/probe_yoloworld.py":/app/probe_yoloworld.py
--v "$(pwd)/probe_segmentation.py":/app/probe_segmentation.py
--v "$(pwd)/models":/models                              # TensorRT cache
--v "$(pwd)/config":/config                              # Inference configs
+docker restart drishti-s5
 ```
 
-**Important**: Python bytecode caching can cause stale imports. If code changes don't take effect after restart:
+**Volume mounts** (configured in `up.sh`):
 ```bash
-docker exec drishti-s2 find /app -name "*.pyc" -delete
-docker restart drishti-s2
+-v "$(pwd)/models":/models   # TensorRT cache
+-v "$(pwd)/config":/config   # Inference config (can modify without rebuild)
 ```
 
 ## Pipeline Order & Probe Attachment: CRITICAL
 
-**Correct pipeline order** (applies to ALL probe types):
+**Correct pipeline order**:
 ```
 pgie → nvvidconv (NV12→RGBA) → nvosd → rgba_caps → nvvidconv_postosd (RGBA→I420) → encoder
 ```
@@ -158,89 +154,60 @@ pgie → nvvidconv (NV12→RGBA) → nvosd → rgba_caps → nvvidconv_postosd (
 1. **pgie** outputs NV12 format
 2. **nvvidconv** converts to RGBA (required for nvosd drawing in CPU mode)
 3. **nvosd** draws bounding boxes and text on RGBA, AND finalizes segmentation metadata
-4. **rgba_caps** ensures RGBA for probes
+4. **rgba_caps** ensures RGBA for probe
 5. **nvvidconv_postosd** converts to I420 for encoder
 
 **WRONG order** (causes no boxes to show): `pgie → nvosd → nvvidconv` (nvosd receives NV12, can't draw)
 
-## Probe Attachment Patterns
+## Segmentation Probe: Zero-Copy GPU Implementation
 
-Different probe types need different attachment points:
-
-**Pattern 1: Custom tensor parsing (probe_yoloworld)**
-- Probe must run BEFORE nvosd to add obj_meta for nvosd to draw
-- Attach to: `nvvidconv.get_static_pad("src")` (right before nvosd input)
-- Example: YOLOWorld custom tensor output parsing
-
-**Pattern 2: Segmentation overlay (probe_segmentation)**
-- Probe must run AFTER nvosd to access finalized segmentation metadata
-- Attach to: `rgba_caps.get_static_pad("sink")` (after nvosd output)
-- Example: Custom CUDA segmentation overlay
-
-**Pattern 3: Default/no-op (probe_default)**
-- Doesn't matter, can attach anywhere
-- Typically attach after nvosd for consistency
-
-**Implementation in app.py**:
-```python
-if args.probe == "probe_yoloworld":
-    nvvidconv_srcpad = nvvidconv.get_static_pad("src")
-    nvvidconv_srcpad.add_probe(Gst.PadProbeType.BUFFER, probe_module.osd_sink_pad_buffer_probe, 0)
-else:
-    rgba_sinkpad = rgba_caps.get_static_pad("sink")
-    rgba_sinkpad.add_probe(Gst.PadProbeType.BUFFER, probe_module.osd_sink_pad_buffer_probe, 0)
+**C++ probe attachment** (in main.cpp):
+```cpp
+// Attach probe AFTER nvosd to access finalized segmentation metadata
+rgba_sinkpad = gst_element_get_static_pad(rgba_caps, "sink");
+gst_pad_add_probe(rgba_sinkpad, GST_PAD_PROBE_TYPE_BUFFER,
+                  segmentation_probe_callback, NULL, NULL);
 ```
 
-## Custom CUDA Overlays: Segmentation
+**Key implementation details**:
 
-**When implementing custom CUDA overlays on segmentation masks**:
+1. **Pipeline order**: nvvidconv BEFORE nvosd (nvosd requires RGBA)
 
-1. **Pipeline order**: Follow the standard order above (nvvidconv BEFORE nvosd)
+2. **nvosd required**: Even with custom CUDA overlay, nvosd processes/finalizes segmentation metadata from nvinfer
 
-2. **nvosd required**: Even if not using it for drawing, nvosd processes/finalizes segmentation metadata from nvinfer
+3. **Zero-copy GPU processing** (segmentation_probe_complete.cpp):
+   ```cpp
+   // Get GPU frame pointer directly from NvBufSurface
+   NvBufSurface *surf = (NvBufSurface *)map_info.data;
+   void *frame_gpu_ptr = surf->surfaceList[frame_meta->batch_id].dataPtr;
 
-3. **Data type conversion** - Segmentation masks from DeepStream are int32, CUDA kernels typically expect uint8:
-   ```python
-   masks = pyds.get_segmentation_masks(seg_meta)
-   mask_array = np.array(masks, copy=True, order='C')
-   mask_array = mask_array.astype(np.uint8)  # Convert int32 → uint8 for CUDA
+   // Get segmentation metadata (int class_map on CPU)
+   NvDsInferSegmentationMeta *seg_meta = (NvDsInferSegmentationMeta *)user_meta->user_meta_data;
+
+   // GPU-only int→float conversion (ZERO CPU overhead)
+   cudaMalloc((void**)&class_map_gpu, seg_size * sizeof(int));
+   cudaMemcpy(class_map_gpu, seg_meta->class_map, seg_size * sizeof(int), cudaMemcpyHostToDevice);
+
+   cudaMalloc((void**)&seg_float_gpu, seg_size * sizeof(float));
+   convert_classmap_gpu(class_map_gpu, seg_float_gpu, seg_size);  // GPU kernel
+
+   // Launch overlay kernel (pure GPU)
+   launch_segmentation_overlay_direct(frame_gpu_ptr, seg_float_gpu, ...);
    ```
 
-4. **Mask values**: Binary segmentation (person/background) has values 0 (background) and 1 (foreground class)
+4. **CUDA kernels** (segmentation_overlay_direct.cu):
+   - `convert_int_to_float`: GPU-only int→float conversion
+   - `apply_segmentation_overlay_direct`: Green overlay with alpha blending on person pixels
 
-5. **Common failure modes**:
+5. **Segmentation threshold**: Set in config file (pgie_peoplesegnet.txt):
+   ```ini
+   segmentation-threshold=0.05  # Lower = more complete coverage, higher = less noise
+   ```
+
+6. **Common failure modes**:
    - All mask values are 0 → nvosd not in pipeline OR segmentation threshold too high
-   - Sparse/offset overlay → Coordinate scaling mismatch between mask resolution and frame resolution
-   - Random dots/garbage → Data type mismatch (int32 read as uint8) or stride issues
-
-## YOLOWorld / Custom Tensor Parsing
-
-**Issue**: DeepStream's `maintain-aspect-ratio=1` letterboxing may not match model's expectations
-
-**Symptoms**:
-- Wrong coordinates (boxes offset)
-- Only certain classes detected (e.g., only bus, not person/car)
-- Boxes in wrong positions
-
-**Solution**: Use `maintain-aspect-ratio=0` for simple resize, then scale coordinates directly:
-
-```python
-# In config file:
-maintain-aspect-ratio=0
-
-# In probe:
-net_w, net_h = 640, 640
-scale_x = frame_width / net_w
-scale_y = frame_height / net_h
-
-# Direct scaling (NO letterbox unmapping):
-x1 = x1 * scale_x
-y1 = y1 * scale_y
-x2 = x2 * scale_x
-y2 = y2 * scale_y
-```
-
-**Don't use letterbox unmapping** with DeepStream's `maintain-aspect-ratio=1` unless you can verify the exact padding behavior matches your calculation.
+   - Sparse/offset overlay → Coordinate scaling mismatch or threshold too high
+   - High CPU usage → Not using GPU-only conversion, copying data to CPU
 
 ## Performance Debugging: Don't Assume the Obvious
 
