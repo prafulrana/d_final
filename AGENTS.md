@@ -1,21 +1,23 @@
 # Repository Guidelines
 
-This repo hosts a **pure C++ DeepStream pipeline** for zero-copy GPU segmentation processing. The pipeline processes RTSP input with PeopleSegNet inference and outputs to RTSP via rtspclientsink. All segmentation overlay processing happens directly on GPU without CPU overhead.
+This repo hosts **DeepStream 8.0 pipelines** for object detection and semantic segmentation. The pipelines process RTSP input with NVIDIA TensorRT inference and output to RTSP via rtspclientsink. Supports both YOLO detection (s4) and PeopleSemSegNet segmentation (s5).
 
 ## Project Structure & Modules
 - `main.cpp` — Pure C++ GStreamer application: nvurisrcbin → nvstreammux → nvinfer → OSD → encoder → rtspclientsink
-- `segmentation_probe_complete.cpp` — C++ pad probe for zero-copy GPU segmentation overlay
-- `segmentation_overlay_direct.cu` — CUDA kernels for GPU-only overlay and int→float conversion
+- `segmentation_probe_complete.cpp` — C++ pad probe for zero-copy GPU segmentation overlay (s5 only)
+- `segmentation_overlay_direct.cu` — CUDA kernels for GPU-only overlay and int→float conversion (s5 only)
+- `libnvdsinfer_custom_impl_Yolo.so` — Custom YOLO parser library (s4 only)
 - `build_app.sh` — Builds C++ application with CUDA kernels
 - `Dockerfile` — DeepStream 8.0 C++ environment with CUDA compilation
-- `up.sh` — Pipeline orchestration script (runs s4 PeopleSemSegNet ONNX pipeline)
-- `models/` — Persistent TensorRT engine cache (volume mounted)
-- `config/` — nvinfer configurations (PeopleSemSegNet semantic segmentation)
+- `up.sh` — Pipeline orchestration script (runs s4 YOLOv8 COCO detection)
+- `models/` — Persistent TensorRT engine cache + ONNX models (volume mounted)
+- `config/` — nvinfer configurations (YOLOv8 detection, PeopleSemSegNet segmentation)
 - `relay/` — MediaMTX relay server configuration (GCP VM). Default zone: `asia-south1-c`
 - `STANDARDS.md`, `STRUCTURE.md` — Build/test/debug documentation
+- `DeepStream-Yolo/` — Community YOLO support repo (custom parser + export tools)
 
 ## Build, Test, Run
-- Build & Run: `./build.sh && ./up.sh` (builds `ds_python:latest`, runs s4 PeopleSemSegNet ONNX pipeline)
+- Build & Run: `./build.sh && ./up.sh` (builds `ds_python:latest`, runs s4 YOLOv8 COCO detection)
 - View logs: `docker logs -f drishti-s4`
 - Monitor: `docker ps --filter name=drishti-s4`
 - Publish test stream: Use Larix app or `gst-launch-1.0` to `rtsp://server:8554/in_s4`
@@ -38,11 +40,26 @@ This repo hosts a **pure C++ DeepStream pipeline** for zero-copy GPU segmentatio
 - **Segmentation test**: Verify green overlay appears on detected people (excellent mask coverage)
 - Include logs and minimal repro for any pipeline or CUDA kernel changes
 
-## Pure C++ Architecture
+## Pipeline Architectures
+
+### s4: YOLOv8 COCO Detection (Active)
 - **Input**: Single RTSP stream at `rtsp://relay:8554/in_s4`
 - **Output**: Single RTSP stream at `rtsp://relay:8554/s4`
+- **Model**: YOLOv8n ONNX (yolov8n.onnx) - Object detection (80 COCO classes)
+- **Config**: `/config/pgie_yolov8_coco.txt` with `network-type=0` (detector)
+- **Custom Parser**: `libnvdsinfer_custom_impl_Yolo.so` (DeepStream-Yolo community parser)
+- **Processing**: Standard nvosd bounding box drawing
+- **Performance**: <5% CPU usage, TensorRT GPU inference
+- **Volume Mounts**:
+  - `-v $(pwd)/models:/models` - TensorRT engine cache + ONNX models (CRITICAL: use `$(pwd)` not `$PWD`)
+  - `-v $(pwd)/config:/config` - Inference config (pgie_yolov8_coco.txt)
+  - `-v $(pwd)/libnvdsinfer_custom_impl_Yolo.so:/app/libnvdsinfer_custom_impl_Yolo.so` - Custom YOLO parser
+
+### s5: PeopleSemSegNet Segmentation
+- **Input**: Single RTSP stream at `rtsp://relay:8554/in_s5`
+- **Output**: Single RTSP stream at `rtsp://relay:8554/s5`
 - **Model**: PeopleSemSegNet ONNX (peoplesemsegnet_shuffleseg.onnx) - Semantic segmentation (background, person)
-- **Config**: network-type=2 with NvDsInferParseCustomPeopleSemSegNet parser
+- **Config**: `/config/pgie_peoplesemseg_onnx.txt` with `network-type=2` (segmentation)
 - **Processing**: Zero-copy GPU segmentation overlay with custom CUDA kernels
 - **Performance**: <5% CPU usage, all processing on GPU
 - **Volume Mounts**:
@@ -160,7 +177,61 @@ pgie → nvvidconv (NV12→RGBA) → nvosd → rgba_caps → nvvidconv_postosd (
 
 **WRONG order** (causes no boxes to show): `pgie → nvosd → nvvidconv` (nvosd receives NV12, can't draw)
 
-## Segmentation Probe: Zero-Copy GPU Implementation
+## YOLO Detection Configuration (s4)
+
+**DeepStream-YOLO Export Process** (CRITICAL for proper bounding boxes):
+
+YOLOv8 models require **DeepStream-specific ONNX export** for correct output format:
+
+1. **Use DeepStream-Yolo export script** (not standard Ultralytics export):
+   ```bash
+   # Standard export WILL NOT WORK with DeepStream parser
+   # yolo export model=yolov8n.pt format=onnx  ❌
+
+   # Use DeepStream-Yolo custom export script:
+   python3 DeepStream-Yolo/utils/export_yoloV8.py -w yolov8n.pt --dynamic -s 640
+   ```
+
+2. **Why custom export is required**:
+   - Standard Ultralytics ONNX includes post-processing incompatible with DeepStream
+   - DeepStream-Yolo adds `DeepStreamOutput` layer that formats: `[boxes, scores, labels]`
+   - Without this layer, bounding boxes will be completely misaligned
+
+3. **PyTorch 2.6+ compatibility fix**:
+   - Line 38 of `export_yoloV8.py` needs `weights_only=False`:
+   ```python
+   ckpt = torch.load(weights, map_location='cpu', weights_only=False)
+   ```
+
+4. **YOLO config requirements** (pgie_yolov8_coco.txt):
+   ```ini
+   [property]
+   network-type=0                                      # Detector (not 2 for segmentation)
+   num-detected-classes=80                             # COCO classes
+   parse-bbox-func-name=NvDsInferParseYolo
+   custom-lib-path=/app/libnvdsinfer_custom_impl_Yolo.so
+   engine-create-func-name=NvDsInferYoloCudaEngineGet
+   maintain-aspect-ratio=0                             # Disable for correct coordinate mapping
+
+   [class-attrs-all]
+   nms-iou-threshold=0.45
+   pre-cluster-threshold=0.25
+   topk=300
+   ```
+
+5. **Custom parser library**:
+   - Source: https://github.com/marcoslucianops/DeepStream-Yolo
+   - Build inside DS8 container: `export CUDA_VER=12.8 && make`
+   - Output: `libnvdsinfer_custom_impl_Yolo.so` (~1.2MB)
+   - Mount to container: `-v $(pwd)/libnvdsinfer_custom_impl_Yolo.so:/app/libnvdsinfer_custom_impl_Yolo.so`
+
+6. **Common YOLO failure modes**:
+   - Misaligned bounding boxes → Used standard Ultralytics export instead of DeepStream-Yolo export
+   - No detections → Wrong parser function or missing custom library
+   - Crashes on load → CUDA version mismatch in parser library build
+   - Engine path issues → Engine saves to `/app/model_b1_gpu0_fp16.engine` instead of configured path
+
+## Segmentation Probe: Zero-Copy GPU Implementation (s5)
 
 **C++ probe attachment** (in main.cpp):
 ```cpp

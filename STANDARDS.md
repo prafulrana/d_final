@@ -72,7 +72,30 @@ gst_pad_add_probe(rgba_sinkpad, GST_PAD_PROBE_TYPE_BUFFER,
 2. nvosd finalizes metadata (required!)
 3. Probe accesses seg_meta → applies zero-copy GPU overlay
 
-## Segmentation Config Requirements
+## YOLO Detection Config Requirements (s4)
+
+```ini
+[property]
+network-type=0                        # Detector (not 2 for segmentation)
+num-detected-classes=80               # COCO classes
+parse-bbox-func-name=NvDsInferParseYolo
+custom-lib-path=/app/libnvdsinfer_custom_impl_Yolo.so
+engine-create-func-name=NvDsInferYoloCudaEngineGet
+maintain-aspect-ratio=0               # Disable for correct coordinate mapping
+
+[class-attrs-all]
+nms-iou-threshold=0.45
+pre-cluster-threshold=0.25
+topk=300
+```
+
+**Key settings:**
+- `network-type=0`: Object detection (not 2 for segmentation)
+- `parse-bbox-func-name`: Custom YOLO parser from DeepStream-Yolo library
+- `maintain-aspect-ratio=0`: Required for correct bounding box coordinates
+- Custom library: Built from https://github.com/marcoslucianops/DeepStream-Yolo
+
+## Segmentation Config Requirements (s5)
 
 ```ini
 [property]
@@ -129,14 +152,24 @@ gst_element_link_many(nvstreammux, pgie, nvvidconv, nvosd, rgba_caps, ...);
 
 ## Common Mistakes to Avoid
 
+### General Pipeline Mistakes
 1. ❌ Running docker commands manually instead of `./build.sh && ./up.sh`
 2. ❌ Wrong pipeline order: `pgie → nvosd → nvvidconv` (nvosd needs RGBA)
 3. ❌ Forgetting to rebuild after C++ changes (editing without `./build.sh`)
-4. ❌ Using `network-type=100` instead of `network-type=2` for segmentation
-5. ❌ Not removing old engine files when changing config
-6. ❌ Removing nvosd from pipeline when using custom segmentation (metadata won't be finalized)
-7. ❌ Copying segmentation data to CPU for processing (use GPU-only kernels)
-8. ❌ Setting segmentation-threshold too high (causes sparse coverage)
+4. ❌ Not removing old engine files when changing config
+
+### YOLO Detection (s4) Mistakes
+5. ❌ **Using standard Ultralytics ONNX export** - CRITICAL: Must use DeepStream-Yolo export script
+6. ❌ Forgetting `weights_only=False` in export_yoloV8.py for PyTorch 2.6+
+7. ❌ Missing custom parser library mount (`libnvdsinfer_custom_impl_Yolo.so`)
+8. ❌ Using `network-type=2` instead of `network-type=0` for detection
+9. ❌ Not setting `maintain-aspect-ratio=0` (causes coordinate misalignment)
+
+### Segmentation (s5) Mistakes
+10. ❌ Using `network-type=100` instead of `network-type=2` for segmentation
+11. ❌ Removing nvosd from pipeline when using custom segmentation (metadata won't be finalized)
+12. ❌ Copying segmentation data to CPU for processing (use GPU-only kernels)
+13. ❌ Setting segmentation-threshold too high (causes sparse coverage)
 
 ## Git LFS
 

@@ -3,20 +3,27 @@
 ```
 d_final/
 ├── main.cpp                              # Pure C++ GStreamer application
-├── segmentation_probe_complete.cpp       # C++ pad probe for zero-copy GPU overlay
-├── segmentation_overlay_direct.cu        # CUDA kernels (overlay, int→float conversion)
+├── segmentation_probe_complete.cpp       # C++ pad probe for zero-copy GPU overlay (s5 only)
+├── segmentation_overlay_direct.cu        # CUDA kernels (overlay, int→float conversion) (s5 only)
+├── libnvdsinfer_custom_impl_Yolo.so      # Custom YOLO parser library (s4 only)
 ├── build_app.sh                          # Builds C++ application with CUDA
 ├── Dockerfile                            # DeepStream 8.0 C++ + CUDA build environment
 ├── build.sh                              # Build Docker image
-├── up.sh                                 # Start s4 PeopleSemSegNet ONNX pipeline
+├── up.sh                                 # Start s4 YOLOv8 COCO detection pipeline
 ├── config/
-│   └── pgie_peoplesemseg_onnx.txt       # PeopleSemSegNet ONNX config (s4)
+│   ├── pgie_yolov8_coco.txt             # YOLOv8 COCO detection config (s4)
+│   └── pgie_peoplesemseg_onnx.txt       # PeopleSemSegNet ONNX config (s5)
 ├── models/                               # Model files (Git LFS)
+│   ├── yolov8n.onnx                     # YOLOv8 nano detection (13MB, DeepStream format)
+│   ├── coco_labels.txt                  # COCO class labels (80 classes)
 │   ├── peoplesemsegnet_vdeployable_shuffleseg_unet_onnx_v1.0.1/
 │   │   ├── peoplesemsegnet_shuffleseg.onnx  # Semantic segmentation model (3.8MB)
 │   │   ├── labels.txt
 │   │   └── peoplesemsegnet_shuffleseg_int8.txt
 │   └── *.engine                         # TensorRT cache (not in git)
+├── DeepStream-Yolo/                      # Community YOLO support (cloned)
+│   ├── nvdsinfer_custom_impl_Yolo/      # Custom parser source
+│   └── utils/export_yoloV8.py           # DeepStream-specific ONNX export
 ├── relay/                                # MediaMTX relay infrastructure (GCP)
 │   ├── main.tf                          # Terraform config
 │   ├── variables.tf                     # Variables
@@ -24,18 +31,20 @@ d_final/
 │   └── README.md                        # Deployment guide
 ├── AGENTS.md                             # AI agent guidelines
 ├── STANDARDS.md                          # Development standards
-└── STRUCTURE.md                          # This file
+├── STRUCTURE.md                          # This file
+└── plan.md                               # YOLO implementation milestone plan
 ```
 
 ## Architecture Overview
 
-### Pure C++ Zero-Copy GPU Pipeline
+### DeepStream Detection & Segmentation Pipelines
 
-**Single pipeline** with PeopleSemSegNet ONNX semantic segmentation and custom GPU overlay:
+**Two pipeline configurations** - object detection (s4) and semantic segmentation (s5):
 
 | Pipeline | Model | Implementation | Input | Output | Purpose |
 |----------|-------|----------------|-------|--------|---------|
-| **s4** | PeopleSemSegNet ONNX | Pure C++ + CUDA | `in_s4` | `s4` | Zero-copy GPU semantic segmentation overlay (green overlay on people) |
+| **s4** | YOLOv8n COCO | Pure C++ + Custom Parser | `in_s4` | `s4` | Object detection (80 COCO classes) with bounding boxes |
+| **s5** | PeopleSemSegNet ONNX | Pure C++ + CUDA | `in_s5` | `s5` | Zero-copy GPU semantic segmentation overlay (green overlay on people) |
 
 ### Pipeline Order (CRITICAL)
 
@@ -170,23 +179,25 @@ CUDA kernels for GPU-only processing:
 
 ### up.sh
 
-Single pipeline orchestration script:
+Pipeline orchestration script (currently runs s4 YOLO detection):
 
 ```bash
-# s4: PeopleSemSegNet ONNX semantic segmentation (pure C++ - zero-copy GPU)
+# s4: YOLOv8 COCO detection (80 classes including person)
 docker run -d --name drishti-s4 --gpus all --rm --network host \
   -v "$(pwd)/models":/models \
   -v "$(pwd)/config":/config \
+  -v "$(pwd)/libnvdsinfer_custom_impl_Yolo.so":/app/libnvdsinfer_custom_impl_Yolo.so \
   ds_python:latest \
   /app/deepstream_app \
   rtsp://RELAY_IP:8554/in_s4 \
   rtsp://RELAY_IP:8554/s4 \
-  /config/pgie_peoplesemseg_onnx.txt
+  /config/pgie_yolov8_coco.txt
 ```
 
 **Volume Mounts:**
-- `models/`: TensorRT engine cache (persistent across runs)
+- `models/`: TensorRT engine cache + ONNX models (persistent across runs)
 - `config/`: Inference configuration (can modify without rebuild, just restart)
+- `libnvdsinfer_custom_impl_Yolo.so`: Custom YOLO parser library
 
 ### Dockerfile
 
@@ -230,17 +241,23 @@ g++ -o deepstream_app \
 
 ### models/ (Git LFS)
 
-**Active model**: `peoplesemsegnet_vdeployable_shuffleseg_unet_onnx_v1.0.1/`
+**YOLO Detection (s4)**:
+- `yolov8n.onnx` (13MB) - YOLOv8 nano object detection (80 COCO classes)
+  - **Exported with**: DeepStream-Yolo custom export script (not standard Ultralytics)
+  - **Source**: Ultralytics YOLOv8n converted with `DeepStream-Yolo/utils/export_yoloV8.py`
+- `coco_labels.txt` - COCO class labels (person, bicycle, car, ...)
+
+**Segmentation (s5)**: `peoplesemsegnet_vdeployable_shuffleseg_unet_onnx_v1.0.1/`
 - `peoplesemsegnet_shuffleseg.onnx` (3.8MB) - Semantic segmentation (background, person)
 - `labels.txt` - Label file (background, person)
 - `peoplesemsegnet_shuffleseg_int8.txt` - INT8 calibration cache
 - `pgie_unet_tlt_config_peoplesemsegnet_shuffleseg.txt` - NGC-provided reference config
-
-**Model source**: `nvidia/tao/peoplesemsegnet:deployable_shuffleseg_unet_onnx_v1.0.1` from NGC
+- **Model source**: `nvidia/tao/peoplesemsegnet:deployable_shuffleseg_unet_onnx_v1.0.1` from NGC
 
 **TensorRT cache** (generated, not in git):
-- `*.engine` files - GPU-specific, ~5-10s to generate on first run
+- `*.engine` files - GPU-specific, ~4-5 minutes to generate on first run
 - Stored in `/models/` via volume mount for persistence
+- Note: YOLO engine currently saves to `/app/model_b1_gpu0_fp16.engine` (path mismatch issue)
 
 ## Development Workflow
 
