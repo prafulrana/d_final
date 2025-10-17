@@ -319,3 +319,300 @@ gst_pad_add_probe(rgba_sinkpad, GST_PAD_PROBE_TYPE_BUFFER,
 3. Network issues (TCP retries, packet loss)
 4. Wrong memory type (not using NVMM)
 5. Actual compute bottleneck (check GPU utilization - unlikely)
+
+## NvDCF Tracker Configuration
+
+**CRITICAL**: NvDCF tracker parameter names are EXACT - wrong names cause silent failures or crashes.
+
+### Valid StateEstimator Parameters
+
+**For `stateEstimatorType: 1` (SIMPLE Kalman Filter)**:
+
+```yaml
+StateEstimator:
+  stateEstimatorType: 1    # SIMPLE state estimator
+  processNoiseVar4Loc: 1.5     # Process noise for bbox center
+  processNoiseVar4Size: 1.3    # Process noise for bbox size
+  processNoiseVar4Vel: 0.03    # Process noise for velocity
+  measurementNoiseVar4Detector: 3.0
+  measurementNoiseVar4Tracker: 8.0
+```
+
+**Common mistakes**:
+- ❌ `noiseWeightVar4Loc` → Causes "Unknown param" warnings
+- ❌ `noiseWeightVar4Acc` → Does NOT exist, causes memory corruption + crash
+- ✅ `processNoiseVar4Loc` → Correct parameter name
+
+### Smooth Bounding Boxes
+
+**Problem**: Boxes jitter/resize by 1-2% every frame
+
+**Solution**: Increase process noise variance (trust past state more):
+
+```yaml
+StateEstimator:
+  processNoiseVar4Loc: 3.0    # Higher = smoother position (default: 1.5)
+  processNoiseVar4Size: 3.0   # Higher = smoother size (default: 1.3)
+  processNoiseVar4Vel: 0.05   # Slightly higher for smoother velocity
+
+VisualTracker:
+  filterLr: 0.02    # Lower learning rate = smoother visual tracking (default: 0.075)
+```
+
+### Persistent Tracking (Reduce Flickering)
+
+**Problem**: Objects appear/disappear every second
+
+**Solution**: Lower thresholds and increase shadow tracking:
+
+```yaml
+BaseConfig:
+  minDetectorConfidence: 0.15    # Lower to accept more detections
+
+TargetManagement:
+  minTrackerConfidence: 0.2      # Lower for shadow tracking
+  probationAge: 1                # Confirm tracks faster
+  maxShadowTrackingAge: 90       # Keep tracks alive 90 frames (3s @ 30fps)
+```
+
+**Also check detection config** (`pgie_yolov8_coco.txt`):
+```ini
+pre-cluster-threshold=0.15    # Lower = more detections
+```
+
+### Tracker Config Debugging
+
+**Check for invalid parameters**:
+```bash
+docker logs drishti-s0 2>&1 | grep "WARNING.*Unknown param"
+```
+
+**Common crash signature**:
+```
+!! [WARNING][SimpleEstimatorParams] Unknown param found: noiseWeightVar4Acc
+corrupted size vs. prev_size
+Aborted (core dumped)
+```
+
+## YOLOv8 Model Export for DeepStream
+
+**CRITICAL**: Standard Ultralytics export does NOT work with DeepStream parsers.
+
+### Correct Export Method
+
+**Use DeepStream-Yolo community export script**:
+
+```bash
+# Automated script (recommended)
+./scripts/export_yolov8.sh yolov8n 2048
+
+# Manual export
+docker run --rm \
+    -v /root/d_final/DeepStream-Yolo:/deepstream-yolo \
+    -v /root/d_final/models:/models \
+    ultralytics/ultralytics:latest bash -c "
+        pip install -q onnx onnxsim && \
+        cd /models && \
+        python3 /deepstream-yolo/utils/export_yoloV8.py -w yolov8n.pt --dynamic -s 2048
+    "
+```
+
+**Why this is required**:
+- Standard export: `[boxes, scores, classes]` as separate tensors
+- DeepStream format: Single `DeepStreamOutput` layer with specific structure
+- Custom parser (`libnvdsinfer_custom_impl_Yolo.so`) expects DeepStream format
+
+### PyTorch 2.6+ Compatibility
+
+**Error**: `_pickle.UnpicklingError: Weights only load failed`
+
+**Fix**: Modify `DeepStream-Yolo/utils/export_yoloV8.py` line 38:
+```python
+ckpt = torch.load(weights, map_location='cpu', weights_only=False)  # Add weights_only=False
+```
+
+### Export Workflow
+
+1. **Download model** (if not exists):
+   ```bash
+   ./scripts/download_model.sh yolov8 yolov8n
+   ```
+
+2. **Export to ONNX**:
+   ```bash
+   ./scripts/export_yolov8.sh yolov8n 2048
+   # Creates: models/yolov8n_2048.onnx
+   ```
+
+3. **Update config**:
+   ```ini
+   onnx-file=/models/yolov8n_2048.onnx
+   model-engine-file=/models/yolov8n_2048_b1_gpu0_fp16.engine
+   ```
+
+4. **First run builds TensorRT engine** (~5-10 min for 2048x2048):
+   ```bash
+   ./up.sh
+   docker logs -f drishti-s0  # Watch for "Building the TensorRT Engine"
+   ```
+
+5. **Subsequent runs use cached engine** (instant startup)
+
+### Resolution Selection
+
+| Resolution | Inference Speed | Detection Quality | Use Case |
+|-----------|----------------|-------------------|----------|
+| 640x640 | ~120 FPS | Good for large objects | High FPS, close-range |
+| 1024x1024 | ~80 FPS | Balanced | General purpose |
+| 1280x1280 | ~60 FPS | Better small objects | Medium distance |
+| 2048x2048 | ~30 FPS | Best small objects | Long distance, detail |
+
+**Hardware context**: With NVIDIA 5070Ti/5080, even 3x concurrent 2048x2048 streams run at 30+ FPS.
+
+## Common Pipeline Issues
+
+### Issue: Containers Crash Immediately
+
+**Symptom**: `docker ps -a` shows `Exited (134)` status
+
+**Debug**:
+1. Remove `--rm` flag from `up.sh` to preserve crashed containers
+2. Check logs: `docker logs drishti-s0`
+3. Look for: "Unknown param", "corrupted size", "Aborted"
+
+**Common causes**:
+- Invalid tracker config parameters (see NvDCF section above)
+- Missing custom parser library
+- Wrong ONNX format (use DeepStream-Yolo export)
+
+### Issue: Jerky/Non-smooth Frames
+
+**Symptom**: Video stutters despite good FPS
+
+**Root cause**: `batched-push-timeout` too high (frames batching)
+
+**Fix**: Lower timeout in `main.cpp`:
+```cpp
+g_object_set(G_OBJECT(nvstreammux), "batched-push-timeout", 40000, NULL);  // 40ms
+```
+
+### Issue: Motion Artifacts/Pixelation
+
+**Symptom**: Blocky squares during fast motion
+
+**Root cause**: Bitrate too low for complexity
+
+**Fix**: Increase bitrate or use slower preset:
+```cpp
+g_object_set(G_OBJECT(encoder), "bitrate", 8000000, NULL);     // 8Mbps
+g_object_set(G_OBJECT(encoder), "preset-level", 3, NULL);      // Slow = quality
+```
+
+### Issue: Bounding Boxes Misaligned
+
+**Symptom**: Detection boxes don't match objects (see screenshot examples)
+
+**Root cause**: Wrong ONNX export format
+
+**Fix**: Re-export with DeepStream-Yolo script (NOT standard Ultralytics):
+```bash
+./scripts/export_yolov8.sh yolov8n 2048
+```
+
+
+### Issue: Slow Pipeline Startup (5-10 min)
+
+**Symptom**: Pipeline takes 5-10 minutes to start on every run
+
+**Root cause**: TensorRT engine not cached, rebuilding every time
+
+**Debug**:
+```bash
+# Check if engine exists on host
+./scripts/cache_engine.sh verify config/pgie_yolov8_coco.txt
+
+# List engines
+./scripts/cache_engine.sh list
+```
+
+**Fix**: Cache engine after first successful build:
+```bash
+# 1. Wait for first build to complete
+docker logs -f drishti-s0  # Watch for "Running main loop..."
+
+# 2. Copy engine to host
+./scripts/cache_engine.sh copy drishti-s0
+
+# 3. Verify cached
+ls -lh models/*.engine
+
+# 4. Future runs will use cache (instant startup)
+./up.sh
+```
+
+**Common mistakes:**
+- `/models` not volume-mounted → Engine builds in container, lost on restart
+- Engine path in config doesn't match actual location
+- GPU changed → Engine is GPU-specific, must rebuild
+
+### Issue: Engine Build Failed
+
+**Symptom**: Pipeline exits during "Building the TensorRT Engine"
+
+**Debug**:
+```bash
+# Check full logs
+docker logs drishti-s0 2>&1 | grep -A 20 "Building the TensorRT Engine"
+```
+
+**Common causes:**
+1. **Out of GPU memory**: Reduce model size or resolution
+2. **Wrong ONNX format**: Re-export with DeepStream-Yolo script
+3. **CUDA version mismatch**: Check CUDA version in logs
+4. **Corrupted ONNX file**: Re-export model
+
+**Fix**:
+```bash
+# Clean old engines
+./scripts/cache_engine.sh clean
+
+# Re-export ONNX
+./scripts/export_yolov8.sh yolov8n 2048
+
+# Retry
+./up.sh
+```
+
+### Issue: Multiple Containers Building Same Engine
+
+**Symptom**: All 3 streams (s0, s1, s2) building engine separately, taking 15-30 min total
+
+**Root cause**: Containers started simultaneously before engine cached
+
+**Fix**: Sequential startup for first run:
+```bash
+# 1. Start first stream only
+docker run -d --name drishti-s0 --gpus all --network host \
+  -v "$(pwd)/models":/models \
+  -v "$(pwd)/config":/config \
+  -v "$(pwd)/libnvdsinfer_custom_impl_Yolo.so":/app/libnvdsinfer_custom_impl_Yolo.so \
+  ds_python:latest \
+  /app/deepstream_app \
+  rtsp://34.14.140.30:8554/in_s0 \
+  rtsp://34.14.140.30:8554/s0 \
+  /config/pgie_yolov8_coco.txt
+
+# 2. Wait for engine build
+docker logs -f drishti-s0  # Wait for "Running main loop..."
+
+# 3. Now start all 3 streams (will use cached engine)
+./up.sh
+```
+
+**Or use cache_engine.sh:**
+```bash
+# After first successful run
+./scripts/cache_engine.sh copy drishti-s0
+
+# Future ./up.sh runs will use cached engine for all 3 streams
+```

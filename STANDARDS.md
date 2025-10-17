@@ -150,26 +150,112 @@ gst_element_link_many(nvstreammux, pgie, nvvidconv, nvosd, rgba_caps, ...);
 
 **Why:** nvosd processes/finalizes segmentation metadata from nvinfer
 
+## TensorRT Engine Management
+
+**Engine lifecycle:**
+1. First run: Builds engine from ONNX (~5-10 min for 2048x2048)
+2. Cached: Engine saved to `/models` volume (instant startup)
+3. Shared: All 3 streams use same engine
+
+### Engine Caching Workflow
+
+**Standard workflow (recommended):**
+```bash
+# 1. Start pipelines (first run builds engine)
+./up.sh
+
+# 2. Monitor build progress
+docker logs -f drishti-s0  # Watch for "Running main loop..."
+
+# 3. Cache engine to host
+./scripts/cache_engine.sh copy drishti-s0
+
+# 4. Verify cached
+./scripts/cache_engine.sh verify config/pgie_yolov8_coco.txt
+
+# 5. Future runs use cache (instant startup)
+./up.sh
+```
+
+### Engine Management Commands
+
+```bash
+# List all engines (containers + host)
+./scripts/cache_engine.sh list
+
+# Copy engine from container to host
+./scripts/cache_engine.sh copy drishti-s0
+
+# Verify engine for current config
+./scripts/cache_engine.sh verify config/pgie_yolov8_coco.txt
+
+# Clean all cached engines
+./scripts/cache_engine.sh clean
+```
+
+### When to Rebuild Engine
+
+**Must rebuild when:**
+- Changed model (yolov8n → yolov8s)
+- Changed resolution (1024 → 2048)
+- Different GPU (engines are GPU-specific)
+- TensorRT version changed
+- ONNX file updated
+
+**No rebuild needed when:**
+- Config threshold changes (`pre-cluster-threshold`)
+- NMS changes (`nms-iou-threshold`)
+- Tracker config changes
+- Encoder settings changes
+
+### Multi-Stream First Run
+
+**Problem**: 3 containers starting simultaneously all build engine (15-30 min)
+
+**Solution**: Sequential first-run startup:
+```bash
+# Option 1: Start one stream first
+docker run -d --name drishti-s0 --gpus all --network host \
+  -v "$(pwd)/models":/models \
+  -v "$(pwd)/config":/config \
+  -v "$(pwd)/libnvdsinfer_custom_impl_Yolo.so":/app/libnvdsinfer_custom_impl_Yolo.so \
+  ds_python:latest \
+  /app/deepstream_app \
+  rtsp://34.14.140.30:8554/in_s0 \
+  rtsp://34.14.140.30:8554/s0 \
+  /config/pgie_yolov8_coco.txt
+
+# Wait for build completion
+docker logs -f drishti-s0
+
+# Now start all 3 (use cached engine)
+./up.sh
+
+# Option 2: Pre-cache engine if available
+./scripts/cache_engine.sh copy drishti-s0  # After any successful build
+```
+
 ## Common Mistakes to Avoid
 
 ### General Pipeline Mistakes
 1. ❌ Running docker commands manually instead of `./build.sh && ./up.sh`
 2. ❌ Wrong pipeline order: `pgie → nvosd → nvvidconv` (nvosd needs RGBA)
 3. ❌ Forgetting to rebuild after C++ changes (editing without `./build.sh`)
-4. ❌ Not removing old engine files when changing config
+4. ❌ Not caching engine after first build (5-10 min startup every time)
+5. ❌ Starting all 3 streams simultaneously on first run (engine builds 3x)
 
-### YOLO Detection (s4) Mistakes
-5. ❌ **Using standard Ultralytics ONNX export** - CRITICAL: Must use DeepStream-Yolo export script
-6. ❌ Forgetting `weights_only=False` in export_yoloV8.py for PyTorch 2.6+
-7. ❌ Missing custom parser library mount (`libnvdsinfer_custom_impl_Yolo.so`)
-8. ❌ Using `network-type=2` instead of `network-type=0` for detection
-9. ❌ Not setting `maintain-aspect-ratio=0` (causes coordinate misalignment)
+### YOLO Detection Mistakes
+6. ❌ **Using standard Ultralytics ONNX export** - CRITICAL: Must use DeepStream-Yolo export script
+7. ❌ Forgetting `weights_only=False` in export_yoloV8.py for PyTorch 2.6+
+8. ❌ Missing custom parser library mount (`libnvdsinfer_custom_impl_Yolo.so`)
+9. ❌ Using `network-type=2` instead of `network-type=0` for detection
+10. ❌ Not setting `maintain-aspect-ratio=0` (causes coordinate misalignment)
 
-### Segmentation (s5) Mistakes
-10. ❌ Using `network-type=100` instead of `network-type=2` for segmentation
-11. ❌ Removing nvosd from pipeline when using custom segmentation (metadata won't be finalized)
-12. ❌ Copying segmentation data to CPU for processing (use GPU-only kernels)
-13. ❌ Setting segmentation-threshold too high (causes sparse coverage)
+### Segmentation Mistakes
+11. ❌ Using `network-type=100` instead of `network-type=2` for segmentation
+12. ❌ Removing nvosd from pipeline when using custom segmentation (metadata won't be finalized)
+13. ❌ Copying segmentation data to CPU for processing (use GPU-only kernels)
+14. ❌ Setting segmentation-threshold too high (causes sparse coverage)
 
 ## Git LFS
 

@@ -1,0 +1,43 @@
+%YAML:1.0
+# NvDCF tracker config optimized for smooth bounding boxes
+BaseConfig:
+  minDetectorConfidence: 0.25
+
+TargetManagement:
+  enableBboxUnClipping: 1
+  preserveStreamUpdateOrder: 0
+  maxTargetsPerStream: 150
+  minIouDiff4NewTarget: 0.5
+  minTrackerConfidence: 0.1
+  probationAge: 1
+  maxShadowTrackingAge: 120
+  earlyTerminationAge: 1
+
+TrajectoryManagement:
+  useUniqueID: 0
+
+DataAssociator:
+  dataAssociatorType: 0
+  associationMatcherType: 1
+  checkClassMatch: 1
+  minMatchingScore4Overall: 0.3
+  minMatchingScore4SizeSimilarity: 0.3
+  minMatchingScore4Iou: 0.2
+
+StateEstimator:
+  stateEstimatorType: 1    # SIMPLE state estimator
+  # Higher process noise = trust past state more = smoother tracking
+  processNoiseVar4Loc: 3.0    # Increased from 1.51 for smoother position
+  processNoiseVar4Size: 3.0   # Increased from 1.32 for smoother size
+  processNoiseVar4Vel: 0.05   # Slightly increased from 0.03
+  measurementNoiseVar4Detector: 3.0
+  measurementNoiseVar4Tracker: 8.0
+
+VisualTracker:
+  visualTrackerType: 2    # NvDCF_VPI
+  useColorNames: 1
+  useHog: 0
+  featureImgSizeLevel: 2
+  filterLr: 0.02    # Lower learning rate (from 0.075) for smoother filter updates
+  filterChannelWeightsLr: 0.05
+  gaussianSigma: 0.75

@@ -2,24 +2,23 @@
 
 ```
 d_final/
-├── main.cpp                              # Pure C++ GStreamer application
-├── segmentation_probe_complete.cpp       # C++ pad probe for zero-copy GPU overlay (s5 only)
-├── segmentation_overlay_direct.cu        # CUDA kernels (overlay, int→float conversion) (s5 only)
-├── libnvdsinfer_custom_impl_Yolo.so      # Custom YOLO parser library (s4 only)
-├── build_app.sh                          # Builds C++ application with CUDA
-├── Dockerfile                            # DeepStream 8.0 C++ + CUDA build environment
+├── main.cpp                              # Pure C++ GStreamer YOLO detection application
+├── libnvdsinfer_custom_impl_Yolo.so      # Custom YOLO parser library
+├── build_app.sh                          # Builds C++ application
+├── Dockerfile                            # DeepStream 8.0 C++ build environment
 ├── build.sh                              # Build Docker image
-├── up.sh                                 # Start s4 YOLOv8 COCO detection pipeline
+├── up.sh                                 # Start 3 YOLO detection pipelines (s0, s1, s2)
 ├── config/
-│   ├── pgie_yolov8_coco.txt             # YOLOv8 COCO detection config (s4)
-│   └── pgie_peoplesemseg_onnx.txt       # PeopleSemSegNet ONNX config (s5)
+│   ├── pgie_yolov8_coco.txt             # YOLOv8 COCO detection config (2048x2048)
+│   └── tracker_smooth.yml               # NvDCF tracker config (smooth bboxes)
+├── scripts/
+│   ├── export_yolov8.sh                 # Export YOLOv8 to DeepStream ONNX format
+│   ├── download_model.sh                # Download models from YOLOv8/NGC/Roboflow
+│   └── cache_engine.sh                  # Manage TensorRT engine cache
 ├── models/                               # Model files (Git LFS)
-│   ├── yolov8n.onnx                     # YOLOv8 nano detection (13MB, DeepStream format)
+│   ├── yolov8n_2048.onnx                # YOLOv8 nano 2048x2048 (13MB, DeepStream format)
+│   ├── yolov8n.pt                       # PyTorch weights (6.3MB)
 │   ├── coco_labels.txt                  # COCO class labels (80 classes)
-│   ├── peoplesemsegnet_vdeployable_shuffleseg_unet_onnx_v1.0.1/
-│   │   ├── peoplesemsegnet_shuffleseg.onnx  # Semantic segmentation model (3.8MB)
-│   │   ├── labels.txt
-│   │   └── peoplesemsegnet_shuffleseg_int8.txt
 │   └── *.engine                         # TensorRT cache (not in git)
 ├── DeepStream-Yolo/                      # Community YOLO support (cloned)
 │   ├── nvdsinfer_custom_impl_Yolo/      # Custom parser source
@@ -31,243 +30,241 @@ d_final/
 │   └── README.md                        # Deployment guide
 ├── AGENTS.md                             # AI agent guidelines
 ├── STANDARDS.md                          # Development standards
-├── STRUCTURE.md                          # This file
-└── plan.md                               # YOLO implementation milestone plan
+└── STRUCTURE.md                          # This file
 ```
 
 ## Architecture Overview
 
-### DeepStream Detection & Segmentation Pipelines
+### DeepStream Detection Pipelines
 
-**Two pipeline configurations** - object detection (s4) and semantic segmentation (s5):
+**Three concurrent YOLO detection pipelines** (s0, s1, s2):
 
-| Pipeline | Model | Implementation | Input | Output | Purpose |
-|----------|-------|----------------|-------|--------|---------|
-| **s4** | YOLOv8n COCO | Pure C++ + Custom Parser | `in_s4` | `s4` | Object detection (80 COCO classes) with bounding boxes |
-| **s5** | PeopleSemSegNet ONNX | Pure C++ + CUDA | `in_s5` | `s5` | Zero-copy GPU semantic segmentation overlay (green overlay on people) |
+| Pipeline | Model | Resolution | Input | Output | Purpose |
+|----------|-------|-----------|-------|--------|---------|
+| **s0** | YOLOv8n COCO | 2048x2048 | `in_s0` | `s0` | Object detection with tracking |
+| **s1** | YOLOv8n COCO | 2048x2048 | `in_s1` | `s1` | Object detection with tracking |
+| **s2** | YOLOv8n COCO | 2048x2048 | `in_s2` | `s2` | Object detection with tracking |
 
-### Pipeline Order (CRITICAL)
+- All 3 streams share the same TensorRT engine for fast startup
+- NvDCF multi-object tracker for stable, smooth bounding boxes
+- 4Mbps H.264 encoding with preset-level 3 for quality
+
+### Pipeline Flow
 
 ```
-nvurisrcbin (RTSP input)
+nvurisrcbin (RTSP input, TCP reconnect)
   ↓
-Bin with ghost pad
+nvstreammux (batch=1, 1280x720, 40ms timeout)  ← Low latency batching
   ↓
-nvstreammux (batch=1, 1280x720)
+nvinfer (YOLOv8 2048x2048, interval=0)         ← Inference every frame
   ↓
-nvinfer (ONNX → TensorRT)
+nvtracker (NvDCF with smooth Kalman filter)    ← Stable tracking
   ↓
-nvvidconv (NV12 → RGBA)          ← MUST come before nvosd
+nvvidconv (NV12 → RGBA)
   ↓
-nvosd (draw boxes, finalize segmentation metadata)
+nvosd (draw boxes, tracking IDs, CPU mode)
   ↓
-rgba_caps (probe attachment point varies)
+capsfilter (RGBA)
   ↓
 nvvidconv_postosd (RGBA → I420)
   ↓
 capsfilter (I420 format)
   ↓
-nvv4l2h264enc (H.264 encoding)
+nvv4l2h264enc (4Mbps CBR, preset 3, I-frame 30)
   ↓
-queue (frame buffering)          ← CRITICAL for smooth output
+queue (4 buffer)
   ↓
 h264parse
   ↓
-rtspclientsink (RTSP output)
+rtspclientsink (RTSP output, TCP, 100ms latency)
 ```
-
-**Why this order matters:**
-- **nvvidconv BEFORE nvosd**: nvosd requires RGBA format to draw (CPU mode)
-- **queue after encoder**: Prevents choppy video by buffering frames
-
-### C++ Probe Attachment
-
-**Segmentation probe** attaches AFTER nvosd to access finalized metadata:
-
-```cpp
-// Attach probe to rgba_caps sink pad (after nvosd)
-rgba_sinkpad = gst_element_get_static_pad(rgba_caps, "sink");
-gst_pad_add_probe(rgba_sinkpad, GST_PAD_PROBE_TYPE_BUFFER,
-                  segmentation_probe_callback, NULL, NULL);
-```
-
-**Process flow:**
-1. nvinfer outputs segmentation metadata
-2. nvosd finalizes metadata (required!)
-3. Probe accesses seg_meta → applies zero-copy GPU overlay
 
 ## Key Files
 
-### main.cpp (207 lines)
+### main.cpp
 
-Pure C++ GStreamer application - zero Python dependencies:
+Pure C++ GStreamer application with NvDCF tracking:
 
-**Key Functions:**
-- `bus_call()` (lines 39-61): Handles pipeline messages (EOS, errors)
-- `on_pad_added()` (lines 18-37): Links nvurisrcbin dynamic pads to nvstreammux
-- `main()` (lines 63-206): Creates pipeline, attaches probe, runs event loop
+**Key optimizations:**
+- `batched-push-timeout: 40000` (40ms) - Smooth frame delivery
+- `interval: 0` - Inference every frame
+- Custom tracker config with higher process noise for smooth boxes
+- CBR encoding with slow preset for clean motion
 
-**nvurisrcbin Configuration:**
+**Tracker configuration:**
 ```cpp
-g_object_set(G_OBJECT(source), "uri", rtsp_in, NULL);
-g_object_set(G_OBJECT(source), "rtsp-reconnect-interval", 10, NULL);
-g_object_set(G_OBJECT(source), "init-rtsp-reconnect-interval", 5, NULL);
-g_object_set(G_OBJECT(source), "rtsp-reconnect-attempts", -1, NULL);  // Infinite
-g_object_set(G_OBJECT(source), "select-rtp-protocol", 4, NULL);       // TCP-only
+g_object_set(G_OBJECT(nvtracker), "ll-config-file", "/config/tracker_smooth.yml", NULL);
+g_object_set(G_OBJECT(nvtracker), "tracker-width", 640, NULL);
+g_object_set(G_OBJECT(nvtracker), "tracker-height", 384, NULL);
 ```
 
-**Probe Attachment:**
+**Encoder configuration:**
 ```cpp
-// Attach probe to rgba_caps sink pad (AFTER nvosd)
-rgba_sinkpad = gst_element_get_static_pad(rgba_caps, "sink");
-gst_pad_add_probe(rgba_sinkpad, GST_PAD_PROBE_TYPE_BUFFER,
-                  segmentation_probe_callback, NULL, NULL);
+g_object_set(G_OBJECT(encoder), "bitrate", 4000000, NULL);     // 4Mbps
+g_object_set(G_OBJECT(encoder), "iframeinterval", 30, NULL);   // 1 second
+g_object_set(G_OBJECT(encoder), "control-rate", 1, NULL);      // CBR
+g_object_set(G_OBJECT(encoder), "preset-level", 3, NULL);      // Slow = quality
 ```
 
-**Critical Optimizations:**
-```cpp
-g_object_set(G_OBJECT(encoder), "preset-id", 0, NULL);      // P1 (highest performance)
-g_object_set(G_OBJECT(encoder), "profile", 2, NULL);        // Main profile
-g_object_set(G_OBJECT(rtsp_sink), "latency", 200, NULL);    // 200ms buffer
+### config/pgie_yolov8_coco.txt
+
+YOLOv8 inference configuration:
+
+```ini
+onnx-file=/models/yolov8n_2048.onnx
+model-engine-file=/models/yolov8n_2048_b1_gpu0_fp16.engine
+batch-size=1
+network-mode=2                    # FP16
+interval=0                        # Inference every frame
+network-type=0                    # Detector
+maintain-aspect-ratio=0
+pre-cluster-threshold=0.15        # Lower threshold for more detections
+nms-iou-threshold=0.45
 ```
 
-### segmentation_probe_complete.cpp (299 lines)
+### config/tracker_smooth.yml
 
-C++ pad probe for zero-copy GPU segmentation overlay:
+NvDCF tracker with smooth bounding boxes:
 
-**Key Functions:**
-- `segmentation_probe_callback()` (lines 67-281): Main probe callback
-  - Gets GPU frame pointer from NvBufSurface
-  - Accesses segmentation metadata (class_map on CPU)
-  - GPU-only int→float conversion (zero CPU overhead)
-  - Launches CUDA overlay kernel
+**Key parameters:**
+- `processNoiseVar4Loc: 3.0` - Higher = smoother position (default: 1.5)
+- `processNoiseVar4Size: 3.0` - Higher = smoother size (default: 1.3)
+- `filterLr: 0.02` - Lower = smoother visual tracking (default: 0.075)
+- `maxShadowTrackingAge: 60` - Keep tracks alive 60 frames without detection
 
-**Zero-copy GPU processing:**
-```cpp
-// Get GPU frame pointer directly
-NvBufSurface *surf = (NvBufSurface *)map_info.data;
-void *frame_gpu_ptr = surf->surfaceList[frame_meta->batch_id].dataPtr;
+### scripts/export_yolov8.sh
 
-// Get segmentation metadata
-NvDsInferSegmentationMeta *seg_meta = (NvDsInferSegmentationMeta *)user_meta->user_meta_data;
+Automated YOLOv8 export to DeepStream ONNX format:
 
-// GPU-only int→float conversion (ZERO CPU overhead)
-cudaMalloc((void**)&class_map_gpu, seg_size * sizeof(int));
-cudaMemcpy(class_map_gpu, seg_meta->class_map, seg_size * sizeof(int), cudaMemcpyHostToDevice);
-
-cudaMalloc((void**)&seg_float_gpu, seg_size * sizeof(float));
-convert_classmap_gpu(class_map_gpu, seg_float_gpu, seg_size);  // GPU kernel
-
-// Launch overlay kernel
-launch_segmentation_overlay_direct(frame_gpu_ptr, seg_float_gpu, ...);
+```bash
+# Usage: ./scripts/export_yolov8.sh <model> <resolution>
+./scripts/export_yolov8.sh yolov8n 2048
+./scripts/export_yolov8.sh yolov8s 1280
+./scripts/export_yolov8.sh yolov8m 1024
 ```
 
-### segmentation_overlay_direct.cu (118 lines)
+**Process:**
+1. Downloads YOLOv8 weights if not exists
+2. Exports to ONNX with DeepStream-specific format
+3. Outputs: `models/yolov8n_<resolution>.onnx`
 
-CUDA kernels for GPU-only processing:
+### scripts/download_model.sh
 
-**Kernels:**
-1. `convert_int_to_float` (lines 69-74): GPU-only int→float conversion
-2. `apply_segmentation_overlay_direct` (lines 9-66): Green overlay with alpha blending
+Download models from various sources:
 
-**Key Features:**
-- Input: RGBA frame (GPU), float segmentation data (GPU)
-- Output: Green translucent overlay on person pixels (class 1)
-- Thread grid: 16x16 blocks covering full frame resolution
-- Alpha blending: `new = original * (1-alpha) + green * alpha`
-- HWC layout support for segmentation masks
+```bash
+# YOLOv8 models
+./scripts/download_model.sh yolov8 yolov8n
+./scripts/download_model.sh yolov8 yolov8s
+
+# NGC models (requires ngc-cli)
+./scripts/download_model.sh ngc nvidia/tao/peoplesegnet:deployable_v2.0.2
+```
 
 ### up.sh
 
-Pipeline orchestration script (currently runs s4 YOLO detection):
+Pipeline orchestration - starts 3 concurrent streams:
 
 ```bash
-# s4: YOLOv8 COCO detection (80 classes including person)
-docker run -d --name drishti-s4 --gpus all --rm --network host \
+# All 3 streams use same model and engine
+docker run -d --name drishti-s0 --gpus all --network host \
   -v "$(pwd)/models":/models \
   -v "$(pwd)/config":/config \
   -v "$(pwd)/libnvdsinfer_custom_impl_Yolo.so":/app/libnvdsinfer_custom_impl_Yolo.so \
   ds_python:latest \
   /app/deepstream_app \
-  rtsp://RELAY_IP:8554/in_s4 \
-  rtsp://RELAY_IP:8554/s4 \
+  rtsp://$RELAY_IP:8554/in_s0 \
+  rtsp://$RELAY_IP:8554/s0 \
   /config/pgie_yolov8_coco.txt
 ```
 
-**Volume Mounts:**
-- `models/`: TensorRT engine cache + ONNX models (persistent across runs)
-- `config/`: Inference configuration (can modify without rebuild, just restart)
-- `libnvdsinfer_custom_impl_Yolo.so`: Custom YOLO parser library
+**Volume mounts:**
+- `models/`: TensorRT engine cache shared across all 3 streams
+- `config/`: Inference and tracker configs
+- `libnvdsinfer_custom_impl_Yolo.so`: Custom YOLO parser
 
-### Dockerfile
+### models/
 
-Single-stage C++ build:
-1. **Base**: DeepStream 8.0 Triton Multiarch
-2. **Copy source**: main.cpp, segmentation_probe_complete.cpp, segmentation_overlay_direct.cu
-3. **Build**: Runs build_app.sh to compile C++ application with CUDA kernels
+**YOLO Detection**:
+- `yolov8n_2048.onnx` (13MB) - YOLOv8 nano 2048x2048 resolution
+  - **Exported with**: `DeepStream-Yolo/utils/export_yoloV8.py`
+  - **NOT** standard Ultralytics export - uses custom DeepStreamOutput layer
+- `yolov8n.pt` (6.3MB) - PyTorch weights
+- `coco_labels.txt` - 80 COCO class labels
 
-**Key features:**
-- Pure C++ (no Python runtime)
-- CUDA kernels compiled with `nvcc`
-- Links against DeepStream libraries (nvdsgst_meta, nvds_meta)
-- Executable: `/app/deepstream_app`
+**TensorRT cache**:
+- `yolov8n_2048_b1_gpu0_fp16.engine` (~12MB) - GPU-specific engine
+- Built on first run (~5-10 min for 2048x2048)
+- Shared by all 3 streams for instant startup
 
-### build_app.sh
+### scripts/cache_engine.sh
 
-Builds the C++ application:
+TensorRT engine management tool:
 
 ```bash
-# Compile CUDA kernel
-nvcc -c segmentation_overlay_direct.cu -o segmentation_overlay_direct.o \
-    --compiler-options '-fPIC' -arch=sm_75
+# List all engines (containers and host)
+./scripts/cache_engine.sh list
 
-# Compile C++ probe
-g++ -c segmentation_probe_complete.cpp -o segmentation_probe_complete.o \
-    -fPIC -I/opt/nvidia/deepstream/deepstream-8.0/sources/includes \
-    -I/usr/local/cuda/include $(pkg-config --cflags gstreamer-1.0)
+# Copy engine from container to host (after first build)
+./scripts/cache_engine.sh copy drishti-s0
 
-# Compile main application
-g++ -c main.cpp -o main.o \
-    -fPIC -I/opt/nvidia/deepstream/deepstream-8.0/sources/includes \
-    $(pkg-config --cflags gstreamer-1.0 glib-2.0)
+# Verify engine exists for current config
+./scripts/cache_engine.sh verify config/pgie_yolov8_coco.txt
 
-# Link into executable
-g++ -o deepstream_app \
-    main.o segmentation_probe_complete.o segmentation_overlay_direct.o \
-    -L/usr/local/cuda/lib64 -L/opt/nvidia/deepstream/deepstream-8.0/lib \
-    -lcudart -lnvdsgst_meta -lnvds_meta \
-    $(pkg-config --libs gstreamer-1.0 glib-2.0)
+# Clean all cached engines
+./scripts/cache_engine.sh clean
 ```
 
-### models/ (Git LFS)
+**Typical workflow:**
+1. First run: `./up.sh` (builds engine 5-10 min)
+2. Monitor: `docker logs -f drishti-s0` (watch for "Running main loop...")
+3. Cache: `./scripts/cache_engine.sh copy drishti-s0`
+4. Future runs: Instant startup using cached engine
 
-**YOLO Detection (s4)**:
-- `yolov8n.onnx` (13MB) - YOLOv8 nano object detection (80 COCO classes)
-  - **Exported with**: DeepStream-Yolo custom export script (not standard Ultralytics)
-  - **Source**: Ultralytics YOLOv8n converted with `DeepStream-Yolo/utils/export_yoloV8.py`
-- `coco_labels.txt` - COCO class labels (person, bicycle, car, ...)
-
-**Segmentation (s5)**: `peoplesemsegnet_vdeployable_shuffleseg_unet_onnx_v1.0.1/`
-- `peoplesemsegnet_shuffleseg.onnx` (3.8MB) - Semantic segmentation (background, person)
-- `labels.txt` - Label file (background, person)
-- `peoplesemsegnet_shuffleseg_int8.txt` - INT8 calibration cache
-- `pgie_unet_tlt_config_peoplesemsegnet_shuffleseg.txt` - NGC-provided reference config
-- **Model source**: `nvidia/tao/peoplesemsegnet:deployable_shuffleseg_unet_onnx_v1.0.1` from NGC
-
-**TensorRT cache** (generated, not in git):
-- `*.engine` files - GPU-specific, ~4-5 minutes to generate on first run
-- Stored in `/models/` via volume mount for persistence
-- Note: YOLO engine currently saves to `/app/model_b1_gpu0_fp16.engine` (path mismatch issue)
+**Why cache engines:**
+- TensorRT engines are GPU-specific (must rebuild on different GPU)
+- Building takes 5-10 minutes for 2048x2048 models
+- All 3 streams share the same engine
+- Volume-mounted `/models` persists cache across container restarts
 
 ## Development Workflow
 
-### C++ Changes (requires rebuild)
-
-C++ files are **compiled into the image**, rebuild required:
+### Adding New Model Resolution
 
 ```bash
-# Edit main.cpp, segmentation_probe_complete.cpp, or segmentation_overlay_direct.cu
-vim segmentation_probe_complete.cpp
+# 1. Export ONNX at desired resolution
+./scripts/export_yolov8.sh yolov8n 1280
+
+# 2. Update config
+vim config/pgie_yolov8_coco.txt
+# Change: onnx-file=/models/yolov8n_1280.onnx
+# Change: model-engine-file=/models/yolov8n_1280_b1_gpu0_fp16.engine
+
+# 3. Restart pipelines (will build engine on first run)
+./up.sh
+```
+
+### Upgrading to Larger Model
+
+```bash
+# 1. Download and export YOLOv8s
+./scripts/download_model.sh yolov8 yolov8s
+./scripts/export_yolov8.sh yolov8s 2048
+
+# 2. Update config
+vim config/pgie_yolov8_coco.txt
+# Change: onnx-file=/models/yolov8s_2048.onnx
+# Change: model-engine-file=/models/yolov8s_2048_b1_gpu0_fp16.engine
+
+# 3. Restart
+./up.sh
+```
+
+### C++ Changes (requires rebuild)
+
+```bash
+# Edit source
+vim main.cpp
 
 # Rebuild and restart
 ./build.sh && ./up.sh
@@ -275,41 +272,91 @@ vim segmentation_probe_complete.cpp
 
 ### Config Changes (no rebuild)
 
-Config files are **volume mounted**, just restart:
-
 ```bash
-# Edit config file
-vim config/pgie_peoplesemseg_onnx.txt
+# Edit config
+vim config/pgie_yolov8_coco.txt
+vim config/tracker_smooth.yml
 
-# Just restart container
-docker restart drishti-s4
+# Just restart
+./up.sh
 ```
 
-### Testing Changes
+### Debugging
 
 ```bash
-# Make changes to C++ source
-./build.sh && ./up.sh
-
 # Check logs
-docker logs -f drishti-s4
+docker logs -f drishti-s0
 
-# View output (WebRTC)
-http://RELAY_IP:8889/s4/
+# Check container status
+docker ps -a | grep drishti
+
+# View output streams
+http://34.14.140.30:8889/s0/
+http://34.14.140.30:8889/s1/
+http://34.14.140.30:8889/s2/
 ```
 
 ## Performance Notes
 
-**Current implementation**: Pure C++ with zero-copy GPU processing
+**Current setup:**
+- 3 concurrent streams @ 2048x2048 YOLOv8n
+- Hardware: NVIDIA 5070Ti/5080
+- Real-time inference (30+ FPS per stream)
+- Shared TensorRT engine for fast startup
 
-**Performance metrics**:
-- CPU usage: <5% (optimized from 100% in Python version)
-- GPU processing: All segmentation overlay work on GPU
-- Zero Python GIL overhead
-- Single 720p stream with real-time segmentation and overlay
+**Optimizations:**
+- Low-latency batching (40ms timeout)
+- Inference every frame (interval=0)
+- Smooth tracking (higher process noise variance)
+- Quality encoding (preset-level 3, 4Mbps CBR)
+
+## Common Issues
+
+### Bounding Box Jitter
+
+**Symptom**: Boxes resize/move slightly every frame
+
+**Fix**: Increase tracker smoothing in `config/tracker_smooth.yml`:
+```yaml
+StateEstimator:
+  processNoiseVar4Loc: 3.0    # Higher = smoother position
+  processNoiseVar4Size: 3.0   # Higher = smoother size
+```
+
+### Motion Corruption/Pixelation
+
+**Symptom**: Blocky artifacts during fast motion
+
+**Fix**: Increase bitrate or use slower preset:
+```cpp
+g_object_set(G_OBJECT(encoder), "bitrate", 8000000, NULL);     // 8Mbps
+g_object_set(G_OBJECT(encoder), "preset-level", 4, NULL);      // Very slow
+```
+
+### Jerky/Non-smooth Frames
+
+**Symptom**: Frames appear to batch/stutter
+
+**Fix**: Lower nvstreammux timeout in `main.cpp`:
+```cpp
+g_object_set(G_OBJECT(nvstreammux), "batched-push-timeout", 40000, NULL);  // 40ms
+```
+
+### Object Flickering (On/Off Detection)
+
+**Fix 1**: Lower detection threshold in `config/pgie_yolov8_coco.txt`:
+```ini
+pre-cluster-threshold=0.10    # Lower for more detections
+```
+
+**Fix 2**: Increase shadow tracking in `config/tracker_smooth.yml`:
+```yaml
+TargetManagement:
+  maxShadowTrackingAge: 90    # Keep tracks alive longer
+```
 
 ## Related Documentation
 
-- **AGENTS.md**: AI agent guidelines, pipeline patterns, common pitfalls
+- **AGENTS.md**: AI agent guidelines, pipeline patterns, troubleshooting
 - **STANDARDS.md**: Development standards, testing workflow
 - **relay/README.md**: MediaMTX relay deployment guide
