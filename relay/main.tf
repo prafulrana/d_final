@@ -5,12 +5,21 @@ terraform {
       source  = "hashicorp/google"
       version = ">= 5.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = ">= 3.5.1"
+    }
   }
 }
 
 provider "google" {
   project = var.project_id
   zone    = var.zone
+}
+
+resource "random_password" "frps_token" {
+  length  = 32
+  special = false
 }
 
 resource "google_compute_instance" "mediamtx" {
@@ -37,6 +46,7 @@ resource "google_compute_instance" "mediamtx" {
 
   metadata_startup_script = templatefile("${path.module}/scripts/startup.sh", {
     path_regex = var.path_regex
+    frp_token  = random_password.frps_token.result
   })
 }
 
@@ -48,12 +58,12 @@ resource "google_compute_firewall" "mediamtx_allow" {
 
   allow {
     protocol = "tcp"
-    ports    = ["8554", "1935", "8888", "8889", "9997"]
+    ports    = ["7000", "8554", "1935", "8888", "8889", "8890", "9997", "9500-9600"]
   }
 
   allow {
     protocol = "udp"
-    ports    = ["8000-8001", "8189", "8890"]
+    ports    = ["8000-8001", "8189", "8890", "9500-9600"]
   }
 
   direction     = "INGRESS"
@@ -66,3 +76,8 @@ output "external_ip" {
   description = "Public IP of the relay"
 }
 
+output "frps_token" {
+  value       = random_password.frps_token.result
+  description = "Token for frps/frpc authentication"
+  sensitive   = true
+}
