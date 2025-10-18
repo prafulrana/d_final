@@ -17,11 +17,13 @@ nvbuf-memory-type=0
 
 [source0]
 enable=1
-type=3
-uri=file:///opt/nvidia/deepstream/deepstream/samples/streams/sample_1080p_h264.mp4
+type=4
+uri=rtsp://34.14.140.30:8554/in_s0
 num-sources=1
 gpu-id=0
 cudadec-memtype=0
+latency=100
+drop-on-latency=1
 
 [source1]
 enable=0
@@ -57,7 +59,7 @@ type=4
 codec=1
 enc-type=0
 sync=1
-bitrate=4000000
+bitrate=2000000
 profile=0
 iframeinterval=30
 control-rate=1
@@ -105,4 +107,4 @@ nvbuf-memory-type=0
 config-file=/config/config_infer_primary.txt
 
 [tests]
-file-loop=1
+file-loop=0
