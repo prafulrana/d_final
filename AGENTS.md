@@ -91,27 +91,34 @@ docker logs ds-files | grep "**PERF"
 - s3 (file): `http://34.14.140.30:8889/s3/`
 - s4 (file): `http://34.14.140.30:8889/s4/`
 
-## Swapping Models (TrafficCamNet ↔ YOLOWorld)
+## Engine Caching (Manual)
 
-Two inference configs are included:
+After first startup, engines are built and saved in `models/`:
+- `yolov8n_b1_gpu0_fp16.engine` (for s0, batch-size=1)
+- `yolov8n_b2_gpu0_fp16.engine` (for s3/s4, batch-size=2)
+
+To cache engines manually after build:
+```bash
+# Engines auto-save to models/ on first run
+ls -lh models/*.engine
+
+# Copy to backup if needed
+cp models/yolov8n_b1_gpu0_fp16.engine models/yolov8n_b1_backup.engine
+```
+
+## Swapping Models (TrafficCamNet ↔ YOLOv8n ↔ YOLOWorld)
+
+Three inference configs are included:
 - `config_infer_primary.txt`: TrafficCamNet (4 classes: Car, Person, Bicycle, RoadSign)
-- `config_infer_yoloworld.txt`: YOLOWorld custom detector (network-type=100)
+- `config_infer_yolov8.txt`: YOLOv8n (80 COCO classes)
+- `config_infer_yoloworld.txt`: YOLOWorld custom detector (80 COCO classes)
 
-**To switch to YOLOWorld**:
-```bash
-# Update both s0 and s3/s4 to use YOLOWorld
-sed -i 's|config_infer_primary.txt|config_infer_yoloworld.txt|' s0_rtsp.py config/file_s3_s4.txt
-rm models/*.engine  # Clear cached engines
-./start.sh
-```
+**To switch models**:
+1. Edit `s0_rtsp.py` line 51: change `config_infer_*.txt`
+2. Edit `config/file_s3_s4.txt` line 96: change `config-file=`
+3. Delete old engines: `rm models/*.engine`
+4. Restart: `./start.sh`
 
-**To switch back to TrafficCamNet**:
-```bash
-sed -i 's|config_infer_yoloworld.txt|config_infer_primary.txt|' s0_rtsp.py config/file_s3_s4.txt
-rm models/*.engine
-./start.sh
-```
-
-Both containers will rebuild the engine and use your chosen model across all streams.
+Both containers will rebuild engines for the new model.
 
 That's it—lightweight, config-driven, same pipeline for live + files.
