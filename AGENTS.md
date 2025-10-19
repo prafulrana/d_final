@@ -1,24 +1,105 @@
 # Repository Guidelines
 
-This repo is intentionally tiny. It exists only to drive the single-stream DeepStream demo you see at `http://<relay-ip>:8889/s0/`.
+This repo runs a 2-container DeepStream harness for testing TrafficCamNet inference on both live RTSP streams and file loops.
 
-## What matters
-- `config/rtsp_smoketest.txt` – DeepStream app config (TrafficCamNet, 30 FPS, single tile).
-- `config/config_infer_primary.txt` – Detector configuration wired to the vendored ONNX + labels.
-- `config/frpc.ini` – Sample `frpc` profile that matches the relay’s token/ports.
-- `models/` – Only the TrafficCamNet ONNX (`resnet18_trafficcamnet_pruned.onnx`) and the 4-class label file (`labels.txt`).
-- `relay/` – Terraform and startup script that bring up MediaMTX + FRPS on GCP with paths `in_s0` (publish) and `s0` (playback).
+## Architecture
 
-## Expectations for future edits
-1. **Stay config-only.** Do not reintroduce C++, Python, or build systems unless the user explicitly requests it.
-2. **Keep DeepStream references absolute.** Inside the container everything references `/config/...` and `/models/...`.
-3. **30 FPS is sacred.** Retain `live-source=1`, `batch-size=1`, `batched-push-timeout=33333`, `iframeinterval=30`, `control-rate=1` unless told otherwise.
-4. **Document behaviour.** If you adjust performance/format knobs, update these docs (and the commit message) so the next operator understands why.
+### Container 1: ds-s0 (Live RTSP)
+- **Config**: `config/s0_live.txt`
+- **Source**: RTSP stream from `rtsp://34.14.140.30:8554/in_s0` (camera via MediaMTX relay)
+- **Sink**: Local RTSP server on `localhost:8554/ds-test` (MediaMTX relay pulls from this)
+- **Purpose**: Real-world streaming with TrafficCamNet inference at 30 FPS
 
-## Quick workflow reminders
-- Deploy relay: `cd relay && terraform init && terraform apply -var project_id=<gcp project>`.
-- Start demo: `docker run -d --gpus all --network host -v "$(pwd)/config":/config -v "$(pwd)/models":/models nvcr.io/nvidia/deepstream:8.0-triton-multiarch deepstream-app -c /config/rtsp_smoketest.txt`.
-- Optional tunnel: `frpc -c config/frpc.ini` when you need to forward RTSP through CG-NAT.
-- Verify stream: open `http://<relay-ip>:8889/s0/` and confirm the single TrafficCamNet view is smooth with labels.
+### Container 2: ds-files (File Loops)
+- **Config**: `config/file_s3_s4.txt`
+- **Source**: Sample H.264 files looping
+- **Sinks**:
+  - s3: Local RTSP server on `localhost:8557/ds-test`
+  - s4: Local RTSP server on `localhost:8558/ds-test`
+- **Purpose**: Deterministic testing/benchmarking
 
-That’s it—stay lightweight, config-driven, and keep the stream clean.
+### Shared Pipeline
+Both containers use the **same inference/OSD configuration**:
+- **Inference**: `config/config_infer_primary.txt` (TrafficCamNet ONNX, batch-size=1, FP16)
+- **OSD**: Bounding boxes + labels for Car/Person/Bicycle/RoadSign
+- **Tracker**: (can be added to both configs)
+
+## What Made s0 Smooth
+
+The key was matching the architecture of the working file streams (s3/s4):
+1. **Local RTSP server** instead of rtspclientsink publishing to remote MediaMTX
+2. **MediaMTX pulls FROM localhost** as an RTSP client (relay config has `source: rtsp://localhost:8554/ds-test`)
+3. **Consistent batch-size=1** everywhere (streammux + inference config + cached engine)
+4. **nvurisrcbin** (type=4) handles RTSP connection/reconnection automatically
+5. **NV12 format** from nvvideoconvert (encoder expects this)
+
+## MediaMTX Relay Configuration
+
+The MediaMTX relay at `34.14.140.30` needs this in `/etc/mediamtx/config.yml`:
+
+```yaml
+paths:
+  in_s0:
+    # Camera publishes here (source=publisher or runOnInit with ffmpeg)
+
+  s0:
+    source: rtsp://<this-machine-ip>:8554/ds-test
+    sourceProtocol: tcp
+    sourceOnDemand: no
+
+  s3:
+    source: rtsp://<this-machine-ip>:8557/ds-test
+    sourceProtocol: tcp
+
+  s4:
+    source: rtsp://<this-machine-ip>:8558/ds-test
+    sourceProtocol: tcp
+```
+
+Replace `<this-machine-ip>` with the IP where ds-s0/ds-files containers run.
+
+## Expectations for Future Edits
+
+1. **Stay config-only.** Both containers use vanilla `deepstream-app` with .txt configs. No C++/Python unless explicitly required.
+2. **Shared inference config.** When swapping models (e.g., your YOLO), update `config_infer_primary.txt` once and both containers pick it up.
+3. **30 FPS is sacred.** Retain `batched-push-timeout=33333`, `iframeinterval=30`, `live-source=0` unless testing specific scenarios.
+4. **Batch size consistency.** If you change batch-size in `config_infer_primary.txt`, update streammux batch-size in BOTH `s0_live.txt` and `file_s3_s4.txt`, then delete old .engine files to force rebuild.
+5. **Document behavior.** Update this file when changing pipeline structure or performance knobs.
+
+## Quick Workflow
+
+### Start both containers
+```bash
+./start.sh
+```
+
+### Stop containers
+```bash
+docker stop ds-s0 ds-files
+docker rm ds-s0 ds-files
+```
+
+### Check performance
+```bash
+docker logs ds-s0 | grep "**PERF"
+docker logs ds-files | grep "**PERF"
+```
+
+### Verify streams
+- s0 (live): `http://34.14.140.30:8889/s0/`
+- s3 (file): `http://34.14.140.30:8889/s3/`
+- s4 (file): `http://34.14.140.30:8889/s4/`
+
+## Adding Your YOLO Model
+
+1. Place ONNX in `models/your_model.onnx`
+2. Edit `config/config_infer_primary.txt`:
+   - Change `onnx-file=` path
+   - Update `num-detected-classes=`
+   - Adjust `parse-bbox-func-name` or `custom-lib-path` if needed
+3. Delete cached engines: `rm models/*.engine`
+4. Restart: `./start.sh`
+
+Both containers will rebuild the engine and use your model.
+
+That's it—lightweight, config-driven, same pipeline for live + files.
