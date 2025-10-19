@@ -91,16 +91,27 @@ docker logs ds-files | grep "**PERF"
 - s3 (file): `http://34.14.140.30:8889/s3/`
 - s4 (file): `http://34.14.140.30:8889/s4/`
 
-## Adding Your YOLO Model
+## Swapping Models (TrafficCamNet ↔ YOLOWorld)
 
-1. Place ONNX in `models/your_model.onnx`
-2. Edit `config/config_infer_primary.txt`:
-   - Change `onnx-file=` path
-   - Update `num-detected-classes=`
-   - Adjust `parse-bbox-func-name` or `custom-lib-path` if needed
-3. Delete cached engines: `rm models/*.engine`
-4. Restart: `./start.sh`
+Two inference configs are included:
+- `config_infer_primary.txt`: TrafficCamNet (4 classes: Car, Person, Bicycle, RoadSign)
+- `config_infer_yoloworld.txt`: YOLOWorld custom detector (network-type=100)
 
-Both containers will rebuild the engine and use your model.
+**To switch to YOLOWorld**:
+```bash
+# Update both s0 and s3/s4 to use YOLOWorld
+sed -i 's|config_infer_primary.txt|config_infer_yoloworld.txt|' s0_rtsp.py config/file_s3_s4.txt
+rm models/*.engine  # Clear cached engines
+./start.sh
+```
+
+**To switch back to TrafficCamNet**:
+```bash
+sed -i 's|config_infer_yoloworld.txt|config_infer_primary.txt|' s0_rtsp.py config/file_s3_s4.txt
+rm models/*.engine
+./start.sh
+```
+
+Both containers will rebuild the engine and use your chosen model across all streams.
 
 That's it—lightweight, config-driven, same pipeline for live + files.

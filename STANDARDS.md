@@ -14,16 +14,29 @@
   ```
 
 ### Changing Inference Model
+
+**Quick Swap (TrafficCamNet ↔ YOLOWorld)**:
+```bash
+# Option 1: TrafficCamNet (default, 4 classes)
+sed -i 's|config_infer_yoloworld.txt|config_infer_primary.txt|' s0_rtsp.py config/file_s3_s4.txt
+
+# Option 2: YOLOWorld (custom detector, network-type=100)
+sed -i 's|config_infer_primary.txt|config_infer_yoloworld.txt|' s0_rtsp.py config/file_s3_s4.txt
+
+# Apply changes
+rm models/*.engine  # Clear cached engines
+./start.sh
+```
+
+**Custom Model**:
 1. Add new ONNX to `models/` directory
-2. Edit `config/config_infer_primary.txt`:
+2. Create `config/config_infer_yourmodel.txt`:
    ```ini
    onnx-file=/models/your_model.onnx
-   model-engine-file=/models/your_model.onnx_b1_gpu0_fp16.engine  # Optional, auto-generates if omitted
    num-detected-classes=<number>
+   batch-size=1  # or 2 for s3/s4 dual sources
    ```
-3. Note batch-size requirements:
-   - s0 Python script: batch-size=1 (line 45 in s0_rtsp.py)
-   - s3/s4 config: batch-size=2 (in config/file_s3_s4.txt)
+3. Point configs to new file: `sed -i 's|config_infer_primary.txt|config_infer_yourmodel.txt|' s0_rtsp.py config/file_s3_s4.txt`
 4. Delete old engine files: `rm models/*.engine`
 5. Restart: `./start.sh`
 
