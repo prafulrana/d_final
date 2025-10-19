@@ -53,8 +53,12 @@ def main():
     # nvvidconv before OSD
     nvvidconv = Gst.ElementFactory.make("nvvideoconvert", "convertor")
 
-    # OSD
+    # OSD (matches config/config_osd.txt settings)
     nvosd = Gst.ElementFactory.make("nvdsosd", "onscreendisplay")
+    nvosd.set_property('display-text', 1)
+    nvosd.set_property('display-bbox', 1)
+    nvosd.set_property('process-mode', 1)
+    nvosd.set_property('gpu-id', 0)
 
     # nvvidconv after OSD
     nvvidconv_postosd = Gst.ElementFactory.make("nvvideoconvert", "convertor_postosd")

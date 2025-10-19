@@ -3,9 +3,11 @@
 ## DeepStream Config Changes
 
 ### Editing Configs
-- **s0**: Edit `s0_rtsp.py` Python script
-- **s3/s4**: Edit `config/file_s3_s4.txt`
-- **Inference**: Edit `config/config_infer_primary.txt` (shared by both)
+- **Inference** (shared): Edit `config/config_infer_primary.txt` to change model/detection settings
+- **OSD/Overlay** (shared):
+  1. Edit `config/config_osd.txt` to change bounding box colors, text size, fonts
+  2. Run `./update_osd.sh` to sync settings to s0_rtsp.py and file_s3_s4.txt
+- **Pipeline structure**: Edit `s0_rtsp.py` or `config/file_s3_s4.txt` directly only for pipeline changes
 - Restart containers after changes:
   ```bash
   ./start.sh

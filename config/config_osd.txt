@@ -1,0 +1,29 @@
+####################################################################################################
+# Shared OSD (On-Screen Display) Configuration
+# Used by both s0 (Python script) and s3/s4 (config files)
+####################################################################################################
+
+[property]
+# Enable OSD overlay
+display-text=1
+display-bbox=1
+display-mask=0
+
+# GPU settings
+gpu-id=0
+nvbuf-memory-type=0
+
+# Bounding box appearance
+border-width=2
+
+# Text appearance
+text-size=12
+text-color=1;1;1;1;
+text-bg-color=0.3;0.3;0.3;1
+font=Serif
+
+# Clock display
+show-clock=0
+
+# Process mode (1=HW, 2=CPU)
+process-mode=1

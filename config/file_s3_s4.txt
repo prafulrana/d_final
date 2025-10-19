@@ -60,14 +60,17 @@ udp-port=5404
 [osd]
 enable=1
 display-text=1
+display-bbox=1
 gpu-id=0
-border-width=1
-text-size=15
+border-width=2
+text-size=12
 text-color=1;1;1;1;
 text-bg-color=0.3;0.3;0.3;1
 font=Serif
 show-clock=0
 nvbuf-memory-type=0
+process-mode=1
+enable=1
 
 [streammux]
 gpu-id=0
