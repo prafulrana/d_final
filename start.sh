@@ -12,6 +12,7 @@ docker run -d \
   -v "$(pwd)/config":/config \
   -v "$(pwd)/models":/models \
   -v "$(pwd)/s0_rtsp.py":/app/s0_rtsp.py \
+  -v "$(pwd)/libnvdsinfer_custom_impl_Yolo.so":/app/libnvdsinfer_custom_impl_Yolo.so \
   --restart unless-stopped \
   nvcr.io/nvidia/deepstream:8.0-triton-multiarch \
   python3 /app/s0_rtsp.py
@@ -23,6 +24,7 @@ docker run -d \
   --net=host \
   -v "$(pwd)/config":/config \
   -v "$(pwd)/models":/models \
+  -v "$(pwd)/libnvdsinfer_custom_impl_Yolo.so":/app/libnvdsinfer_custom_impl_Yolo.so \
   --restart unless-stopped \
   nvcr.io/nvidia/deepstream:8.0-triton-multiarch \
   deepstream-app -c /config/file_s3_s4.txt

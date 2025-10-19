@@ -93,7 +93,7 @@ bbox-border-color3=0;1;0;1
 interval=0
 gie-unique-id=1
 nvbuf-memory-type=0
-config-file=/config/config_infer_primary.txt
+config-file=/config/config_infer_yolov8.txt
 
 [tests]
 file-loop=1

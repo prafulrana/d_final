@@ -48,7 +48,7 @@ def main():
 
     # Primary GIE (inference)
     pgie = Gst.ElementFactory.make("nvinfer", "primary-inference")
-    pgie.set_property('config-file-path', "/config/config_infer_primary.txt")
+    pgie.set_property('config-file-path', "/config/config_infer_yolov8.txt")
 
     # nvvidconv before OSD
     nvvidconv = Gst.ElementFactory.make("nvvideoconvert", "convertor")
