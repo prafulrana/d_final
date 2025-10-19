@@ -6,8 +6,8 @@ d_final/
 ├── STANDARDS.md                 # Coding/config standards
 ├── STRUCTURE.md                 # This file
 ├── start.sh                     # Launcher for both containers
+├── s0_rtsp.py                   # Python script for s0 (live RTSP)
 ├── config/
-│   ├── s0_live.txt             # DeepStream config for live RTSP (in_s0 → s0)
 │   ├── file_s3_s4.txt          # DeepStream config for file loops (s3, s4)
 │   ├── config_infer_primary.txt # Shared inference config (TrafficCamNet/YOLO)
 │   └── frpc.ini                # FRP client template for NAT traversal
@@ -27,13 +27,14 @@ d_final/
 
 ### start.sh
 Launches 2 containers:
-- **ds-s0**: Live RTSP input (`s0_live.txt`)
+- **ds-s0**: Live RTSP input (Python script `s0_rtsp.py`)
 - **ds-files**: File loop tests (`file_s3_s4.txt`)
 
-### config/s0_live.txt
+### s0_rtsp.py
+- Python script for s0 (config-only approach causes segfaults)
 - Source: RTSP from `in_s0` (camera via relay)
 - Sink: Local RTSP server on localhost:8554
-- Shared inference from `config_infer_primary.txt`
+- Shared inference from `/config/config_infer_primary.txt`
 
 ### config/file_s3_s4.txt
 - Sources: Sample H.264 files (looping)
@@ -42,7 +43,7 @@ Launches 2 containers:
 
 ### config/config_infer_primary.txt
 - Model: TrafficCamNet ONNX (resnet18, 4 classes, FP16)
-- Batch size: 1 (matches both s0 and s3/s4 streammux)
+- Used by both s0 Python script and s3/s4 config files
 - Swappable for YOLO or other detectors
 
-Nothing else is needed for the live demo.
+Note: s0 uses batch-size=1 (single stream), s3/s4 use batch-size=2 (dual file sources).

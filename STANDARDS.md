@@ -3,7 +3,9 @@
 ## DeepStream Config Changes
 
 ### Editing Configs
-- Edit `.txt` files under `config/` directory
+- **s0**: Edit `s0_rtsp.py` Python script
+- **s3/s4**: Edit `config/file_s3_s4.txt`
+- **Inference**: Edit `config/config_infer_primary.txt` (shared by both)
 - Restart containers after changes:
   ```bash
   ./start.sh
@@ -16,13 +18,10 @@
    onnx-file=/models/your_model.onnx
    model-engine-file=/models/your_model.onnx_b1_gpu0_fp16.engine  # Optional, auto-generates if omitted
    num-detected-classes=<number>
-   batch-size=1  # Keep at 1 for single-stream
    ```
-3. Update batch-size in **both** `config/s0_live.txt` and `config/file_s3_s4.txt` if needed:
-   ```ini
-   [streammux]
-   batch-size=1  # Must match config_infer_primary.txt
-   ```
+3. Note batch-size requirements:
+   - s0 Python script: batch-size=1 (line 45 in s0_rtsp.py)
+   - s3/s4 config: batch-size=2 (in config/file_s3_s4.txt)
 4. Delete old engine files: `rm models/*.engine`
 5. Restart: `./start.sh`
 
@@ -106,8 +105,8 @@ docker logs frpc --tail 20
 ## Key Constraints
 
 1. **30 FPS is sacred**: Keep `batched-push-timeout=33333`, `iframeinterval=30`
-2. **Batch-size consistency**: streammux batch-size MUST match inference config batch-size
+2. **Batch-size awareness**: s0 uses batch-size=1, s3/s4 use batch-size=2
 3. **live-source=0**: Always use this (even for RTSP) for consistent frame pacing
-4. **Stay config-only**: Use vanilla deepstream-app unless custom probes/trackers are explicitly needed
+4. **Python for s0**: Config-only approach causes segfaults; use s0_rtsp.py
 
-Keep it simple: configs only, 2 containers, shared inference pipeline.
+Keep it simple: Python for s0, config for s3/s4, shared inference pipeline.

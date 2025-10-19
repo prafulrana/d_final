@@ -5,10 +5,11 @@ This repo runs a 2-container DeepStream harness for testing TrafficCamNet infere
 ## Architecture
 
 ### Container 1: ds-s0 (Live RTSP)
-- **Config**: `config/s0_live.txt`
+- **Implementation**: Python script (`s0_rtsp.py`)
 - **Source**: RTSP stream from `rtsp://34.14.140.30:8554/in_s0` (camera via MediaMTX relay)
 - **Sink**: Local RTSP server on `localhost:8554/ds-test` (MediaMTX relay pulls from this)
 - **Purpose**: Real-world streaming with TrafficCamNet inference at 30 FPS
+- **Why Python**: Config-only approach causes segfaults; Python script handles nvurisrcbin dynamic pads properly
 
 ### Container 2: ds-files (File Loops)
 - **Config**: `config/file_s3_s4.txt`
@@ -60,10 +61,10 @@ Replace `<this-machine-ip>` with the IP where ds-s0/ds-files containers run.
 
 ## Expectations for Future Edits
 
-1. **Stay config-only.** Both containers use vanilla `deepstream-app` with .txt configs. No C++/Python unless explicitly required.
-2. **Shared inference config.** When swapping models (e.g., your YOLO), update `config_infer_primary.txt` once and both containers pick it up.
+1. **s0 uses Python, s3/s4 use config.** s0 requires Python script for smooth RTSP streaming. s3/s4 use vanilla `deepstream-app` with .txt configs.
+2. **Shared inference config.** When swapping models (e.g., YOLO), update `config_infer_primary.txt` once and both containers pick it up.
 3. **30 FPS is sacred.** Retain `batched-push-timeout=33333`, `iframeinterval=30`, `live-source=0` unless testing specific scenarios.
-4. **Batch size consistency.** If you change batch-size in `config_infer_primary.txt`, update streammux batch-size in BOTH `s0_live.txt` and `file_s3_s4.txt`, then delete old .engine files to force rebuild.
+4. **Batch size consistency.** s0 Python script uses batch-size=1. s3/s4 use batch-size=2 for 2 file sources. Inference config must match.
 5. **Document behavior.** Update this file when changing pipeline structure or performance knobs.
 
 ## Quick Workflow
