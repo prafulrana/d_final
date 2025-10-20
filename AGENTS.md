@@ -246,3 +246,52 @@ If you have old code referencing:
 4. **All 3 streams identical**: Same binary, same config, just different stream ID
 5. **Don't modify s0/s1 when debugging s2**: They work, leave them alone
 6. **TensorRT engine caching**: Build once, share across all containers (but watch for race conditions on first build)
+
+## Portrait Video Implementation Checklist
+
+Before starting portrait video work, ensure baseline is stable by running:
+```bash
+./system.sh status    # All checks should pass
+git status            # Should be clean
+```
+
+### Phase 1: Research & Planning
+- [ ] Study NVIDIA DeepStream portrait video handling
+- [ ] Test current setup with portrait input (publisher already has portrait video)
+- [ ] Document observed issues (aspect ratio, bounding boxes, etc.)
+- [ ] Identify required nvstreammux/nvosd/encoder changes
+
+### Phase 2: Configuration Changes
+- [ ] Update nvstreammux dimensions in live_stream.c (currently 1920x1080)
+- [ ] Test with maintain-aspect-ratio=0 vs maintain-aspect-ratio=1
+- [ ] Adjust OSD properties for portrait coordinates
+- [ ] Update encoder settings if needed (iframeinterval, bitrate)
+- [ ] Test TensorRT engine rebuild with new dimensions
+
+### Phase 3: Testing & Validation
+- [ ] Verify FPS remains ~30 with portrait video
+- [ ] Check bounding box coordinates are correct
+- [ ] Verify GPU memory usage is acceptable
+- [ ] Test all 3 streams with portrait input
+- [ ] Check WebRTC playback on relay
+
+### Phase 4: Rollback Plan
+If portrait implementation fails:
+```bash
+git reset --hard pre-portrait-stable  # Reset to stable tag
+./build.sh                             # Rebuild
+./system.sh restart                    # Restart
+```
+
+### Key Risks
+1. **Aspect ratio handling**: maintain-aspect-ratio=1 adds padding, =0 may distort
+2. **TensorRT engine size**: Portrait may require different input dimensions
+3. **Coordinate mapping**: YOLOv8 bbox coords may need adjustment for portrait
+4. **Performance**: Different resolution may impact FPS
+
+### Success Criteria
+- [ ] All 3 streams process portrait video at 30 FPS
+- [ ] Bounding boxes correctly positioned on people
+- [ ] No GPU memory issues
+- [ ] WebRTC playback works on relay
+- [ ] System remains stable after 10 minutes of operation

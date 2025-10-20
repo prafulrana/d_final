@@ -2,18 +2,23 @@
 
 ```
 d_final/
-├── AGENTS.md                    # Architecture + operational guide (READ THIS FIRST)
+├── README.md                    # Quick start guide
+├── AGENTS.md                    # Architecture + operational guide
 ├── STANDARDS.md                 # Coding/config standards
 ├── STRUCTURE.md                 # This file
-├── start.sh                     # Start all containers (ds-s0, ds-s1, ds-s2, publisher)
-├── stop.sh                      # Stop all containers
-├── build.sh                     # Docker image builder (ds-s1:latest, publisher:latest)
+├── system.sh                    # Manage local (start/stop/restart/status)
+├── relay.sh                     # Manage remote relay (restart/status)
+├── check.sh                     # Health check validation
+├── debug.sh                     # Debugging diagnostics
+├── start.sh                     # Start containers only
+├── stop.sh                      # Stop containers only
+├── build.sh                     # Docker image builder
+├── frpc-{start,stop,restart,status}.sh  # frpc tunnel management
 ├── live_stream.c                # Parameterized C binary (takes stream ID 0/1/2)
 ├── Dockerfile.s1                # Builds ds-s1:latest with live_stream binary
 ├── libnvdsinfer_custom_impl_Yolo.so  # YOLOv8 custom parser library
 ├── config/
-│   ├── config_infer_yolov8.txt # YOLOv8n inference config (current)
-│   ├── config_osd.txt          # OSD (bounding box) settings
+│   ├── config_infer_yolov8.txt # YOLOv8n inference config
 │   └── frpc.ini                # FRP client config (CONTAINS RELAY IP)
 ├── models/
 │   ├── yolov8n.onnx            # YOLOv8n model
@@ -28,6 +33,7 @@ d_final/
     ├── main.tf                 # Terraform for MediaMTX relay VM
     ├── scripts/startup.sh      # VM startup script (MediaMTX + frps server)
     ├── variables.tf            # Terraform variables
+    ├── test.sh                 # End-to-end relay test
     └── README.md               # Relay deployment docs
 ```
 
