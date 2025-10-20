@@ -9,7 +9,7 @@ FAIL=0
 
 # Check 1: Containers running
 echo "[1/6] Checking containers..."
-EXPECTED_CONTAINERS=("ds-s0" "ds-s1" "ds-s2" "publisher")
+EXPECTED_CONTAINERS=("ds-s0" "ds-s1" "ds-s2")
 for container in "${EXPECTED_CONTAINERS[@]}"; do
     if docker ps --format '{{.Names}}' | grep -q "^${container}$"; then
         echo "  ✓ $container running"

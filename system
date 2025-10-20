@@ -1,0 +1,50 @@
+#!/bin/bash
+# Full system (frpc + DeepStream + relay check)
+
+FRPC_CONFIG="/root/d_final/.scripts/frpc/frpc.ini"
+FRPC_LOG="/var/log/frpc.log"
+
+frpc_start() {
+    if pgrep -x frpc > /dev/null; then
+        echo "✓ frpc already running"
+        return 0
+    fi
+    nohup frpc -c "$FRPC_CONFIG" > "$FRPC_LOG" 2>&1 &
+    sleep 2
+    if pgrep -x frpc > /dev/null && grep -q "login to server success" "$FRPC_LOG" 2>/dev/null; then
+        echo "✓ frpc started"
+    else
+        echo "✗ frpc failed to start"
+        return 1
+    fi
+}
+
+frpc_stop() {
+    if pgrep -x frpc > /dev/null; then
+        pkill -x frpc
+        sleep 1
+        echo "✓ frpc stopped"
+    fi
+}
+
+case "$1" in
+    start)
+        frpc_start && ./ds start
+        ;;
+    stop)
+        ./ds stop && frpc_stop
+        ;;
+    restart)
+        ./ds stop
+        frpc_stop
+        sleep 1
+        frpc_start && ./ds start
+        ;;
+    status)
+        ./.scripts/check.sh
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac

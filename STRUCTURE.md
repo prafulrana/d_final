@@ -6,39 +6,51 @@ d_final/
 ├── AGENTS.md                    # Architecture + operational guide
 ├── STANDARDS.md                 # Coding/config standards
 ├── STRUCTURE.md                 # This file
-├── system.sh                    # Manage local (start/stop/restart/status)
-├── relay.sh                     # Manage remote relay (restart/status)
-├── check.sh                     # Health check validation
-├── debug.sh                     # Debugging diagnostics
-├── start.sh                     # Start containers only
-├── stop.sh                      # Stop containers only
-├── build.sh                     # Docker image builder
-├── frpc-{start,stop,restart,status}.sh  # frpc tunnel management
-├── live_stream.c                # Parameterized C binary (takes stream ID 0/1/2)
-├── Dockerfile.s1                # Builds ds-s1:latest with live_stream binary
+│
+├── system                       # Full system manager (frpc + DeepStream)
+├── ds                          # DeepStream containers only (start/stop/status)
+├── relay                       # Remote relay manager (restart/status)
+├── build.sh                    # Docker image builder
+│
+├── live_stream.c               # Parameterized C binary (takes stream ID 0/1/2)
+├── Dockerfile.s1               # Builds ds-s1:latest with live_stream binary
 ├── libnvdsinfer_custom_impl_Yolo.so  # YOLOv8 custom parser library
+│
+├── .scripts/                   # Hidden utilities
+│   ├── check.sh               # Health check validation
+│   ├── debug.sh               # Debugging diagnostics
+│   └── frpc/
+│       └── frpc.ini           # FRP client config (CONTAINS RELAY IP + TOKEN)
+│
 ├── config/
 │   └── config_infer_yolov8.txt # YOLOv8n inference config
-├── frpc/
-│   └── frpc.ini                # FRP client config (CONTAINS RELAY IP)
+│
 ├── models/
-│   ├── yolov8n.onnx            # YOLOv8n model
-│   ├── coco_labels.txt         # COCO class labels
-│   └── *.engine                # TensorRT engine cache (auto-generated)
-├── publisher/                   # Test video publisher (isolated)
-│   ├── Dockerfile              # Publisher image build
-│   ├── loop_stream.sh          # Publish script (loops video to in_s2)
-│   ├── start.sh                # Publisher launcher
+│   ├── yolov8n.onnx           # YOLOv8n model
+│   ├── coco_labels.txt        # COCO class labels
+│   └── *.engine               # TensorRT engine cache (auto-generated)
+│
+│   ├── loop_stream.sh         # Publish script (loops video to in_s2)
 │   └── bowling_bottom_right.mp4  # Portrait test video
-└── relay/
-    ├── main.tf                 # Terraform for MediaMTX relay VM
-    ├── scripts/startup.sh      # VM startup script (MediaMTX + frps server)
-    ├── variables.tf            # Terraform variables
-    ├── test.sh                 # End-to-end relay test
-    └── README.md               # Relay deployment docs
+│
+└── relay_infra/               # Terraform infrastructure for relay
+    ├── main.tf                # MediaMTX relay VM
+    ├── scripts/startup.sh     # VM startup script (MediaMTX + frps server)
+    └── variables.tf           # Terraform variables
 ```
 
 ## Key Files
+
+### Management Scripts (Root Level)
+- **system**: Full system management (start/stop/restart/status)
+  - Manages frpc tunnel + DeepStream containers together
+  - Use `./system start` to start frpc and all DS containers
+  - Use `./system status` to check frpc, DS containers, and relay health
+- **ds**: DeepStream containers only (build/start/stop/restart/status)
+  - Use `./ds start` to start containers without touching frpc
+- **relay**: Remote relay management (restart/status)
+  - SSHs to relay VM and manages frps + mediamtx containers
+  - Use `./relay status` to check relay health
 
 ### Live Stream (Parameterized C Binary)
 - **live_stream.c**: Single binary, takes stream ID (0, 1, 2) as argv[1]
@@ -46,23 +58,20 @@ d_final/
   - Stream ID 1 → pulls `in_s1`, serves on `8555`, UDP port `5401`
   - Stream ID 2 → pulls `in_s2`, serves on `8556`, UDP port `5402`
   - All use YOLOv8n inference (`config/config_infer_yolov8.txt`)
-  - **CONTAINS RELAY IP** (line 97: derived from `snprintf`)
+  - **CONTAINS RELAY IP** (line 96: `snprintf(input_uri, ...)`)
 
 ### Docker Images
-- **Dockerfile.s1**: Builds single binary `live_stream` into one image
-- **publisher/Dockerfile**: Builds test video publisher
+- **Dockerfile.s1**: Builds single binary `live_stream` into one image (ds-s1:latest)
 
-### Scripts
-- **start.sh**: Starts all containers (ds-s0, ds-s1, ds-s2, publisher)
-- **stop.sh**: Stops all containers
-- **build.sh**: Rebuilds ds-s1:latest and publisher:latest images
-- **publisher/start.sh**: Alternative standalone publisher start (use main start.sh instead)
-- **publisher/loop_stream.sh**: Publishes video to relay's in_s2
+  - Automatically stops old container and starts new one
 
-### Configuration
+### Configuration Files
 - **config/config_infer_yolov8.txt**: YOLOv8n detector (80 COCO classes)
-- **config/config_osd.txt**: Bounding box colors, text size
-- **frpc/frpc.ini**: FRP client settings (**CONTAINS RELAY IP AND TOKEN**)
+- **.scripts/frpc/frpc.ini**: FRP client settings (**CONTAINS RELAY IP AND TOKEN**)
+
+### Utilities (Hidden in .scripts/)
+- **.scripts/check.sh**: Health check validation (used by `./system status`)
+- **.scripts/debug.sh**: Debugging diagnostics (check container logs, RTSP servers, etc.)
 
 ### Relay Infrastructure
 - **relay/main.tf**: Terraform config for GCP VM
@@ -74,7 +83,6 @@ d_final/
 
 1. `live_stream.c` (line 97: `snprintf(input_uri, ...)`)
 2. `frpc/frpc.ini` (lines 2 and 4)
-3. `publisher/loop_stream.sh` (line 7: `rtspclientsink location`)
 
 ## Architecture Summary
 
@@ -102,44 +110,56 @@ Camera → in_s2 (relay) → ds-s2 (YOLOv8) → localhost:8556 → frpc → rela
 
 ### Start Everything
 ```bash
-./build.sh    # Only if live_stream.c changed
-./start.sh    # Start all: ds-s0, ds-s1, ds-s2, publisher
+./build.sh         # Only if live_stream.c changed
 ```
 
 ### Stop Everything
 ```bash
-./stop.sh     # Stop all containers
+./system stop      # Stop all containers + frpc
+```
+
+### DeepStream Only (without frpc)
+```bash
+./ds stop          # Stop all containers
+./ds status        # Check container status
+```
+
+```bash
+```
+
+### Check System Health
+```bash
+./system status    # Full health check (frpc + DS + relay)
+./ds status        # Just container status
+./relay status     # Just relay status
 ```
 
 ### After Relay IP Change
 ```bash
-# 1. Update live_stream.c line 97
-# 2. Update frpc/frpc.ini lines 2, 4
-# 3. Update publisher/loop_stream.sh line 7
+# 1. Update live_stream.c line 96
+# 2. Update .scripts/frpc/frpc.ini lines 2, 4
 ./build.sh
-pkill frpc && nohup frpc -c frpc/frpc.ini > /var/log/frpc.log 2>&1 &
-./start.sh
+./system restart   # Restart frpc + containers with new config
 ```
 
 ### Change Inference Model
 ```bash
-# Edit live_stream.c line 165 to use different config_infer_*.txt
+# Edit live_stream.c line 150 to use different config_infer_*.txt
 sed -i 's|config_infer_yolov8.txt|config_infer_new.txt|' live_stream.c
 ./build.sh
 rm models/*.engine
-./start.sh
+./ds restart
 ```
 
 ### Rebuild TensorRT Engine
 ```bash
 rm models/*.engine    # Clear cached engines
-./start.sh            # Let first container build, then restart others
+./ds restart          # All containers rebuild engines
 ```
 
 ## What NOT to Do
 
-1. **Don't manually edit /etc/mediamtx/config.yml on relay**: Use `relay/scripts/startup.sh` + Terraform
+1. **Don't manually edit /etc/mediamtx/config.yml on relay**: Use `relay_infra/scripts/startup.sh` + Terraform
 2. **Don't skip rebuilding after .c changes**: Docker uses cached binary, not your edits
-3. **Don't forget to restart frpc after config changes**: Old process keeps old IP/token
+3. **Don't forget to restart system after config changes**: Use `./system restart` to apply new frpc config
 4. **Don't modify working streams when debugging**: If s0 works but s2 doesn't, leave s0 alone
-5. **Don't start all 3 containers simultaneously on first engine build**: Causes race condition/deadlock

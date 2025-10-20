@@ -7,7 +7,7 @@ echo ""
 
 # Containers
 echo "[Containers]"
-docker ps -a --filter "name=ds-s" --filter "name=publisher" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+docker ps -a --filter "name=ds-s" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 echo ""
 
 # GPU
@@ -43,6 +43,11 @@ if pgrep -x frpc > /dev/null; then
 else
     echo "  ✗ Not running"
 fi
+echo ""
+
+# Relay Status
+echo "[Relay (in_s2 input)]"
+./relay status 2>&1 | grep -E "in_s2|ready" | tail -5 | sed 's/^/  /' || echo "  (relay check failed)"
 echo ""
 
 # Container logs

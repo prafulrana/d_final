@@ -1,18 +1,38 @@
 # Standards and Workflow
 
+## Quick Reference
+
+### Management Scripts
+- **`./system`**: Full system (frpc + DeepStream) - `start|stop|restart|status`
+- **`./ds`**: DeepStream containers only - `build|start|stop|restart|status`
+- **`./relay`**: Remote relay - `restart|status`
+- **`./build.sh`**: Rebuild Docker images
+
+### Component Locations
+- **DeepStream source**: `live_stream.c` (single parameterized binary)
+- **FRP config**: `.scripts/frpc/frpc.ini`
+- **Inference config**: `config/config_infer_yolov8.txt`
+- **Utilities**: `.scripts/check.sh`, `.scripts/debug.sh`
+
+### Quick Commands
+```bash
+./system start      # Start everything (frpc + containers)
+./system status     # Health check
+./ds restart        # Restart containers only
+./relay status      # Check remote relay
+```
+
 ## Architecture Constraints
 
 ### Relay IP Changes
-When the relay IP changes (after terraform destroy/apply), you MUST update these 3 files:
-1. `live_stream.c` (line 97: `snprintf(input_uri, ...)`)
-2. `frpc/frpc.ini` (line 2: `server_addr`, line 4: `token`)
-3. `publisher/loop_stream.sh` (line 7: `rtspclientsink location`)
+When the relay IP changes (after terraform destroy/apply), you MUST update these 2 files:
+1. `live_stream.c` (line 96: `snprintf(input_uri, ...)`)
+2. `.scripts/frpc/frpc.ini` (line 2: `server_addr`, line 4: `token`)
 
 Then rebuild and restart:
 ```bash
 ./build.sh
-pkill frpc && nohup frpc -c /root/d_final/frpc/frpc.ini > /var/log/frpc.log 2>&1 &
-./start.sh
+./system restart    # Restarts frpc + all containers
 ```
 
 ### Relay Configuration (Terraform)
@@ -34,12 +54,13 @@ terraform output -raw frps_token
 ### frpc (Local FRP Client)
 **Always restart after config changes**:
 ```bash
-pkill frpc
-nohup frpc -c /root/d_final/frpc/frpc.ini > /var/log/frpc.log 2>&1 &
+./system restart    # Restarts frpc + all containers together
 ```
 
 **Check it worked**:
 ```bash
+./system status     # Full health check
+# Or check logs manually:
 tail -10 /var/log/frpc.log
 # Should see: "proxy added: [s0_rtsp s1_rtsp s2_rtsp]"
 ```
@@ -49,31 +70,22 @@ tail -10 /var/log/frpc.log
 ### Editing Source Code
 After editing `live_stream.c`, you MUST rebuild:
 ```bash
-./build.sh    # Rebuilds ds-s1:latest with new binary
-./stop.sh     # Stop all containers
-./start.sh    # Restart all containers (includes publisher)
+./build.sh      # Rebuilds ds-s1:latest with new binary
+./ds restart    # Restart all DeepStream containers
 ```
 
 Docker uses cached binaries - your edits won't apply until rebuild.
 
 ### Changing Inference Model
 ```bash
-# Edit live_stream.c line 165 to use different config
+# Edit live_stream.c line 150 to use different config
 sed -i 's|config_infer_yolov8.txt|config_infer_new.txt|' live_stream.c
 
 # Rebuild and restart
 ./build.sh
 rm models/*.engine  # Clear old TensorRT engines
-./start.sh
+./ds restart
 ```
-
-### OSD/Overlay Changes
-Edit `config/config_osd.txt` then restart:
-```bash
-./start.sh
-```
-
-OSD config is read at startup, no rebuild needed.
 
 ## Performance Standards
 
@@ -117,28 +129,30 @@ docker exec ds-s0 cp /app/model_b1_gpu0_fp16.engine /models/yolov8n_b1_gpu0_fp16
 ### Rebuilding Engines
 ```bash
 rm models/*.engine
-./start.sh    # All containers will try to build - wait for completion
+./ds restart    # All containers will try to build - wait for completion
 ```
 
 ## Debugging Workflow
 
+### Quick Health Check
+```bash
+./system status    # Full system health check
+./.scripts/debug.sh # Detailed diagnostics
+```
+
 ### Stream Not Working
 ```bash
 # 1. Check container is running
-docker ps | grep ds-s
+./ds status
 
 # 2. Check container logs
 docker logs ds-s0 --tail 50
 
-# 3. Check local RTSP server
-ffprobe rtsp://127.0.0.1:8554/ds-test
-
-# 4. Check frpc tunnel
+# 3. Check frpc tunnel
 tail -20 /var/log/frpc.log
 
-# 5. Check relay
-gcloud compute ssh mediamtx-relay --zone=asia-south1-c \
-  --command="docker logs mediamtx --tail 20"
+# 4. Check relay
+./relay status
 ```
 
 ### Don't Modify Working Streams
@@ -152,8 +166,8 @@ They have identical architecture (same binary, different stream ID). If one work
 
 ### Committing Changes
 ```bash
-# After relay IP change, commit all 3 updated files
-git add live_stream.c frpc/frpc.ini publisher/loop_stream.sh
+# After relay IP change, commit all updated files
+git add live_stream.c .scripts/frpc/frpc.ini
 git commit -m "config: update relay IP to $(cd relay && terraform output -raw external_ip)"
 ```
 
@@ -239,29 +253,3 @@ Each container should use 4-5% CPU at 30 FPS.
 **Cause**: Multiple containers trying to build same engine file simultaneously
 **Fix**: Stop all containers, let one build first, then restart all
 
-## Publisher (Test Video Streaming)
-
-### Start Publisher
-```bash
-cd publisher/
-./start.sh    # Streams test video to relay's in_s2
-```
-
-### Stop Publisher
-```bash
-docker stop publisher
-```
-
-### Change Test Video
-Replace `publisher/bowling_bottom_right.mp4` with your video file, then:
-```bash
-cd publisher/
-docker build -t publisher:latest .
-./start.sh
-```
-
-### Publisher Architecture
-- Runs in separate container
-- Loops video file continuously
-- Publishes to `rtsp://34.47.221.242:8554/in_s2` via TCP
-- Good for testing s2 without needing actual camera

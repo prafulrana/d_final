@@ -2,6 +2,24 @@
 
 This repo runs 3 DeepStream containers (s0, s1, s2) for YOLOv8 inference on live RTSP streams from a MediaMTX relay.
 
+## Component Navigation
+
+### Three Main Components
+
+**1. DeepStream Containers** (Core System)
+- **Location**: Managed by `./ds` and `./system` scripts
+- **What**: Three containers (ds-s0, ds-s1, ds-s2) running YOLOv8 inference
+- **Start**: `./system start` or `./ds start`
+- **Stop**: `./system stop` or `./ds stop`
+- **Status**: `./ds status`
+
+**2. FRP Tunnel + Relay** (Connectivity)
+- **Local (frpc)**: Managed by `./system` script, config in `.scripts/frpc/frpc.ini`
+- **Remote (relay)**: Managed by `./relay` script, runs on GCP VM
+- **What**: Tunnels local RTSP to public relay for WebRTC streaming
+- **Start**: `./system start` (starts frpc)
+- **Check**: `./system status` or `./relay status`
+
 ## Architecture
 
 ### Current Setup (3 Live Streams)
@@ -41,19 +59,13 @@ Relay pulls from tunnels → Serves as s0, s1, s2 (WebRTC/HLS/RTSP)
 - All built from same Docker image with single parameterized binary
 - Launched with different stream IDs: `/app/live_stream 0`, `/app/live_stream 1`, `/app/live_stream 2`
 
-**Publisher** (test video streaming):
-- Isolated in `publisher/` folder
-- Runs in separate container
-- Publishes test video to `in_s2` for testing without cameras
-
 ## Critical Files Containing Relay IP
 
 When the relay IP changes, update ALL of these:
-1. `live_stream.c` (line 97: `snprintf(input_uri, ...)`)
-2. `frpc/frpc.ini` (line 2: `server_addr`)
-3. `publisher/loop_stream.sh` (line 7: `rtspclientsink location`)
+1. `live_stream.c` (line 96: `snprintf(input_uri, ...)`)
+2. `.scripts/frpc/frpc.ini` (line 2: `server_addr`, line 4: `token`)
 
-**Much simpler now**: Only 3 files instead of 6 thanks to parameterized binary.
+**Much simpler now**: Only 2 files instead of 6 thanks to parameterized binary.
 
 ## Relay Changes (Terraform Workflow)
 
@@ -82,20 +94,11 @@ terraform output -raw frps_token
 # 2. Rebuild Docker images
 ./build.sh
 
-# 3. Restart frpc with new config
-pkill frpc
-nohup frpc -c /root/d_final/frpc/frpc.ini > /var/log/frpc.log 2>&1 &
+# 3. Restart entire system (frpc + containers)
+./system restart
 
-# 4. Verify frpc connected
-tail -10 /var/log/frpc.log
-# Should see: "proxy added: [s0_rtsp s1_rtsp s2_rtsp]"
-
-# 5. Restart containers
-./start.sh
-
-# 6. Start publisher (if using test video for in_s2)
-cd publisher/
-./start.sh
+# 4. Verify everything started
+./system status
 ```
 
 ## frpc (Local FRP Client)
@@ -103,18 +106,19 @@ cd publisher/
 **What it does**: Tunnels DeepStream's local RTSP servers to the relay so viewers can access processed streams.
 
 **When to restart**:
-- After changing `frpc/frpc.ini` (IP or token change)
+- After changing `.scripts/frpc/frpc.ini` (IP or token change)
 - If relay was recreated
 - If tunnels disconnect (check logs)
 
 **How to restart**:
 ```bash
-pkill frpc
-nohup frpc -c /root/d_final/frpc/frpc.ini > /var/log/frpc.log 2>&1 &
+./system restart    # Preferred: Restarts frpc + containers together
 ```
 
 **How to check status**:
 ```bash
+./system status     # Full health check
+# Or manually check logs:
 tail -20 /var/log/frpc.log
 # Good: "login to server success", "proxy added: [s0_rtsp s1_rtsp s2_rtsp]"
 # Bad: "dial tcp ... i/o timeout" (wrong IP), "authorization failed" (wrong token)
@@ -122,33 +126,32 @@ tail -20 /var/log/frpc.log
 
 ## Quick Workflow
 
-### Start everything
+### Start Everything
 ```bash
-./build.sh    # Rebuild if live_stream.c changed
-./start.sh    # Start all: ds-s0, ds-s1, ds-s2, publisher
+./build.sh         # Rebuild if live_stream.c changed
+./system start     # Start frpc + all DeepStream containers
 ```
 
-### Stop everything
+### Stop Everything
 ```bash
-./stop.sh     # Stop all containers
+./system stop      # Stop all containers + frpc
 ```
 
-### Check status
+### Check Status
 ```bash
-# Local containers
-docker ps | grep ds-s
+./system status    # Full health check (frpc, DS, relay)
+./ds status        # Just container status
+./relay status     # Just relay status
+```
 
-# Local RTSP servers
-ffprobe rtsp://127.0.0.1:8554/ds-test  # s0
-ffprobe rtsp://127.0.0.1:8555/ds-test  # s1
-ffprobe rtsp://127.0.0.1:8556/ds-test  # s2
+### Debug DeepStream Containers
+```bash
+docker logs ds-s0 --tail 20   # Check s0 logs
+docker logs ds-s1 --tail 20   # Check s1 logs
+docker logs ds-s2 --tail 20   # Check s2 logs
 
-# frpc tunnels
-tail -10 /var/log/frpc.log
-
-# Relay status
-gcloud compute ssh mediamtx-relay --zone=asia-south1-c \
-  --command="docker logs mediamtx --tail 20"
+# Or use debug script
+./.scripts/debug.sh
 ```
 
 ### View processed streams
@@ -217,26 +220,29 @@ GPU memory usage per container: ~390 MiB
 nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv
 ```
 
-## Recent Cleanup (2025-10-20)
+## Recent Changes
 
-### What Changed
-1. **DRY principle**: Replaced 3 duplicate C files (`live_s0.c`, `live_s1.c`, `live_s2.c`) with single parameterized `live_stream.c`
-2. **Publisher organized**: Moved all publisher files to `publisher/` folder with own Dockerfile and start.sh
-3. **Removed legacy code**: Deleted unused Python version, old test files, duplicate scripts
-4. **Documentation updated**: All 3 docs (STRUCTURE.md, STANDARDS.md, AGENTS.md) reflect new architecture
+### Major Cleanup (2025-10-20)
+1. **DRY principle**: Replaced 3 duplicate C files with single parameterized `live_stream.c`
+2. **Script consolidation**: Simplified 11 scripts down to 4 (`system`, `ds`, `relay`, `build.sh`)
+3. **Utilities hidden**: Moved check.sh, debug.sh, frpc config to `.scripts/`
+4. **Publisher removed**: All publisher code removed from codebase (use external publisher for testing)
 
 ### Benefits
-- **Simpler IP updates**: 3 files instead of 6
-- **Easier maintenance**: One binary, one source file
-- **Better organization**: Publisher isolated in own folder
-- **Less confusion**: No duplicate/legacy code lying around
+- **Simpler IP updates**: 2 files instead of 6
+- **Easier management**: `./system start` for everything, `./ds start` for containers only
+- **Clean separation**: Core system only, test tools external
+
+### Component Separation
+- **Core system**: frpc + DeepStream (s0, s1, s2) - managed by `./system`
+- **Relay**: Remote infrastructure - managed by `./relay`
 
 ### Migration Notes
 If you have old code referencing:
-- `live_s0`, `live_s1`, `live_s2` binaries → Use `/app/live_stream 0/1/2` instead
-- `Dockerfile.publisher` → Now `publisher/Dockerfile`
-- `loop_stream.sh` → Now `publisher/loop_stream.sh`
-- `s0_rtsp.py` → Deleted (was legacy Python version)
+- `live_s0/s1/s2` binaries → Use `/app/live_stream 0/1/2` instead
+- `start.sh/stop.sh` → Use `./system start/stop` or `./ds start/stop`
+- `frpc/frpc.ini` → Now `.scripts/frpc/frpc.ini`
+- `check.sh/debug.sh` → Now `.scripts/check.sh` and `.scripts/debug.sh`
 
 ## Expectations for Future Edits
 
@@ -257,7 +263,7 @@ git status            # Should be clean
 
 ### Phase 1: Research & Planning
 - [ ] Study NVIDIA DeepStream portrait video handling
-- [ ] Test current setup with portrait input (publisher already has portrait video)
+- [ ] Test current setup with portrait input
 - [ ] Document observed issues (aspect ratio, bounding boxes, etc.)
 - [ ] Identify required nvstreammux/nvosd/encoder changes
 
