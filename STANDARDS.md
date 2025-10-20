@@ -253,3 +253,39 @@ Each container should use 4-5% CPU at 30 FPS.
 **Cause**: Multiple containers trying to build same engine file simultaneously
 **Fix**: Stop all containers, let one build first, then restart all
 
+### FFmpeg Publishing Works But DeepStream Crashes with "NvBufSurfTransform failed"
+**Cause**: iPhone HDR video (Dolby Vision, bt2020 color space) incompatible with DeepStream
+**Symptoms**:
+- Pipeline sets to PLAYING, receives pad, links succeed
+- Then crashes with: `nvbufsurftransform.cpp:4253: => Transformation Failed -1`
+- No output, no PERF stats, container exits
+- Works perfectly with Larix but not FFmpeg from iPhone video file
+
+**Fix**: Convert iPhone HDR video to SDR (bt709) before streaming:
+
+```bash
+# Step 1: Convert iPhone video to clean SDR file (one-time, slow but high quality)
+ffmpeg -i your_iphone_video.MOV \
+  -vf "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,format=yuv420p,fps=30,scale=1920:1080" \
+  -colorspace bt709 -color_primaries bt709 -color_trc bt709 \
+  -c:v libx264 -profile:v baseline -bf 0 -g 30 -preset slow \
+  -c:a aac -b:a 128k -ar 48000 \
+  -movflags +faststart \
+  clean_video.mp4
+
+# Step 2: Stream the clean file (fast, zero re-encoding)
+ffmpeg -re -stream_loop -1 -i clean_video.mp4 \
+  -c copy \
+  -f rtsp -rtsp_transport tcp \
+  rtsp://34.47.221.242:8554/in_s0
+```
+
+**Why this happens**:
+- iPhone 15 Pro Max (and similar) record in Dolby Vision HDR
+- Source video is 10-bit yuv420p10le with bt2020 color space
+- DeepStream expects 8-bit SDR (bt709) video
+- NvBufSurfTransform can't convert bt2020 → NV12 for inference
+- The conversion must happen in FFmpeg, not in DeepStream
+
+**Larix works because**: Mobile apps encode to baseline H264 with bt709 (standard SDR) by default
+
