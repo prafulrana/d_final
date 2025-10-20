@@ -18,7 +18,8 @@ d_final/
 ├── Dockerfile.s1                # Builds ds-s1:latest with live_stream binary
 ├── libnvdsinfer_custom_impl_Yolo.so  # YOLOv8 custom parser library
 ├── config/
-│   ├── config_infer_yolov8.txt # YOLOv8n inference config
+│   └── config_infer_yolov8.txt # YOLOv8n inference config
+├── frpc/
 │   └── frpc.ini                # FRP client config (CONTAINS RELAY IP)
 ├── models/
 │   ├── yolov8n.onnx            # YOLOv8n model
@@ -61,7 +62,7 @@ d_final/
 ### Configuration
 - **config/config_infer_yolov8.txt**: YOLOv8n detector (80 COCO classes)
 - **config/config_osd.txt**: Bounding box colors, text size
-- **config/frpc.ini**: FRP client settings (**CONTAINS RELAY IP AND TOKEN**)
+- **frpc/frpc.ini**: FRP client settings (**CONTAINS RELAY IP AND TOKEN**)
 
 ### Relay Infrastructure
 - **relay/main.tf**: Terraform config for GCP VM
@@ -72,7 +73,7 @@ d_final/
 ## Files Containing Relay IP (Update After IP Change)
 
 1. `live_stream.c` (line 97: `snprintf(input_uri, ...)`)
-2. `config/frpc.ini` (lines 2 and 4)
+2. `frpc/frpc.ini` (lines 2 and 4)
 3. `publisher/loop_stream.sh` (line 7: `rtspclientsink location`)
 
 ## Architecture Summary
@@ -113,10 +114,10 @@ Camera → in_s2 (relay) → ds-s2 (YOLOv8) → localhost:8556 → frpc → rela
 ### After Relay IP Change
 ```bash
 # 1. Update live_stream.c line 97
-# 2. Update config/frpc.ini lines 2, 4
+# 2. Update frpc/frpc.ini lines 2, 4
 # 3. Update publisher/loop_stream.sh line 7
 ./build.sh
-pkill frpc && nohup frpc -c config/frpc.ini > /var/log/frpc.log 2>&1 &
+pkill frpc && nohup frpc -c frpc/frpc.ini > /var/log/frpc.log 2>&1 &
 ./start.sh
 ```
 

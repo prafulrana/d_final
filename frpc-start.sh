@@ -1,7 +1,7 @@
 #!/bin/bash
 # Start frpc tunnel client
 
-CONFIG="/root/d_final/config/frpc.ini"
+CONFIG="/root/d_final/frpc/frpc.ini"
 LOG="/var/log/frpc.log"
 
 # Check if already running

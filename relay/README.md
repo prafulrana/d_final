@@ -17,7 +17,7 @@ The relay is configured to support a DeepStream processing pipeline with 3 strea
    - `localhost:8556` → `relay:9502`
 4. **Relay Output**: MediaMTX pulls from `localhost:9500-9502` and serves as `s0-s2` via WebRTC/HLS/RTSP
 
-**frpc Config**: `/root/d_final/config/frpc.ini`
+**frpc Config**: `/root/d_final/frpc/frpc.ini`
 **MediaMTX Config**: Relay pulls from `rtsp://127.0.0.1:950X/ds-test` for each sX path
 
 ## IMPORTANT: Static IP Configuration
@@ -88,8 +88,8 @@ terraform output external_ip
 terraform output -raw frps_token
 
 # 5. Update local frpc config
-# Edit /root/d_final/config/frpc.ini with new token
-# Then restart frpc: pkill frpc && nohup frpc -c /root/d_final/config/frpc.ini > /var/log/frpc.log 2>&1 &
+# Edit /root/d_final/frpc/frpc.ini with new token
+# Then restart frpc: pkill frpc && nohup frpc -c /root/d_final/frpc/frpc.ini > /var/log/frpc.log 2>&1 &
 ```
 
 ## Outputs
@@ -195,7 +195,7 @@ After deploying the relay, configure your DeepStream machine:
    - `s0_rtsp.py`
    - `loop_stream.sh`
 
-2. **Update frpc config** (`config/frpc.ini`):
+2. **Update frpc config** (`frpc/frpc.ini`):
    ```ini
    [common]
    server_addr = 34.47.221.242
@@ -206,7 +206,7 @@ After deploying the relay, configure your DeepStream machine:
 3. **Rebuild and start**:
    ```bash
    ./build.sh
-   pkill frpc && nohup frpc -c /root/d_final/config/frpc.ini > /var/log/frpc.log 2>&1 &
+   pkill frpc && nohup frpc -c /root/d_final/frpc/frpc.ini > /var/log/frpc.log 2>&1 &
    ./start.sh
    ```
 
@@ -227,7 +227,7 @@ After deploying the relay, configure your DeepStream machine:
 
 ### New frps_token after terraform apply
 **Cause**: Terraform generates new random token on each apply
-**Fix**: Update `config/frpc.ini` on DeepStream machine and restart frpc
+**Fix**: Update `frpc/frpc.ini` on DeepStream machine and restart frpc
 
 ### Stream works in in_sX but not sX
 **Cause**: frpc tunnel not working

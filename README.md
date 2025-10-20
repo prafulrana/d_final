@@ -53,7 +53,7 @@ tail -f /var/log/frpc.log         # frpc tunnel logs
 ### Relay IP change
 Update 3 files, then rebuild:
 1. `live_stream.c` (line 97)
-2. `config/frpc.ini` (lines 2, 4)
+2. `frpc/frpc.ini` (lines 2, 4)
 3. `publisher/loop_stream.sh` (line 7)
 
 ```bash
@@ -73,7 +73,7 @@ Update 3 files, then rebuild:
 
 **Common issues:**
 - **"Resetting source" loop**: Relay not publishing to in_sX
-- **frpc errors**: Wrong relay IP or token in config/frpc.ini
+- **frpc errors**: Wrong relay IP or token in frpc/frpc.ini
 - **Pipeline not PLAYING**: Check docker logs for errors
 
 ## Docs

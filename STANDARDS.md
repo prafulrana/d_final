@@ -5,13 +5,13 @@
 ### Relay IP Changes
 When the relay IP changes (after terraform destroy/apply), you MUST update these 3 files:
 1. `live_stream.c` (line 97: `snprintf(input_uri, ...)`)
-2. `config/frpc.ini` (line 2: `server_addr`, line 4: `token`)
+2. `frpc/frpc.ini` (line 2: `server_addr`, line 4: `token`)
 3. `publisher/loop_stream.sh` (line 7: `rtspclientsink location`)
 
 Then rebuild and restart:
 ```bash
 ./build.sh
-pkill frpc && nohup frpc -c /root/d_final/config/frpc.ini > /var/log/frpc.log 2>&1 &
+pkill frpc && nohup frpc -c /root/d_final/frpc/frpc.ini > /var/log/frpc.log 2>&1 &
 ./start.sh
 ```
 
@@ -35,7 +35,7 @@ terraform output -raw frps_token
 **Always restart after config changes**:
 ```bash
 pkill frpc
-nohup frpc -c /root/d_final/config/frpc.ini > /var/log/frpc.log 2>&1 &
+nohup frpc -c /root/d_final/frpc/frpc.ini > /var/log/frpc.log 2>&1 &
 ```
 
 **Check it worked**:
@@ -153,7 +153,7 @@ They have identical architecture (same binary, different stream ID). If one work
 ### Committing Changes
 ```bash
 # After relay IP change, commit all 3 updated files
-git add live_stream.c config/frpc.ini publisher/loop_stream.sh
+git add live_stream.c frpc/frpc.ini publisher/loop_stream.sh
 git commit -m "config: update relay IP to $(cd relay && terraform output -raw external_ip)"
 ```
 

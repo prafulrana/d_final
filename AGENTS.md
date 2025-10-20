@@ -33,7 +33,7 @@ Relay pulls from tunnels → Serves as s0, s1, s2 (WebRTC/HLS/RTSP)
 **frp Tunneling**:
 - **frps** (server): Runs on relay, accepts tunnels on port 7000
 - **frpc** (client): Runs locally, tunnels localhost:8554-8556 → relay:9500-9502
-- **Config**: `config/frpc.ini` (contains relay IP and token)
+- **Config**: `frpc/frpc.ini` (contains relay IP and token)
 
 **DeepStream Containers**:
 - All use YOLOv8n (`config/config_infer_yolov8.txt`)
@@ -50,7 +50,7 @@ Relay pulls from tunnels → Serves as s0, s1, s2 (WebRTC/HLS/RTSP)
 
 When the relay IP changes, update ALL of these:
 1. `live_stream.c` (line 97: `snprintf(input_uri, ...)`)
-2. `config/frpc.ini` (line 2: `server_addr`)
+2. `frpc/frpc.ini` (line 2: `server_addr`)
 3. `publisher/loop_stream.sh` (line 7: `rtspclientsink location`)
 
 **Much simpler now**: Only 3 files instead of 6 thanks to parameterized binary.
@@ -84,7 +84,7 @@ terraform output -raw frps_token
 
 # 3. Restart frpc with new config
 pkill frpc
-nohup frpc -c /root/d_final/config/frpc.ini > /var/log/frpc.log 2>&1 &
+nohup frpc -c /root/d_final/frpc/frpc.ini > /var/log/frpc.log 2>&1 &
 
 # 4. Verify frpc connected
 tail -10 /var/log/frpc.log
@@ -103,14 +103,14 @@ cd publisher/
 **What it does**: Tunnels DeepStream's local RTSP servers to the relay so viewers can access processed streams.
 
 **When to restart**:
-- After changing `config/frpc.ini` (IP or token change)
+- After changing `frpc/frpc.ini` (IP or token change)
 - If relay was recreated
 - If tunnels disconnect (check logs)
 
 **How to restart**:
 ```bash
 pkill frpc
-nohup frpc -c /root/d_final/config/frpc.ini > /var/log/frpc.log 2>&1 &
+nohup frpc -c /root/d_final/frpc/frpc.ini > /var/log/frpc.log 2>&1 &
 ```
 
 **How to check status**:
