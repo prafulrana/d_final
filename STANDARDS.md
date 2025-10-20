@@ -1,127 +1,267 @@
 # Standards and Workflow
 
-## DeepStream Config Changes
+## Architecture Constraints
 
-### Editing Configs
-- **Inference** (shared): Edit `config/config_infer_primary.txt` to change model/detection settings
-- **OSD/Overlay** (shared):
-  1. Edit `config/config_osd.txt` to change bounding box colors, text size, fonts
-  2. Run `./update_osd.sh` to sync settings to s0_rtsp.py and file_s3_s4.txt
-- **Pipeline structure**: Edit `s0_rtsp.py` or `config/file_s3_s4.txt` directly only for pipeline changes
-- Restart containers after changes:
-  ```bash
-  ./start.sh
-  ```
+### Relay IP Changes
+When the relay IP changes (after terraform destroy/apply), you MUST update these 3 files:
+1. `live_stream.c` (line 97: `snprintf(input_uri, ...)`)
+2. `config/frpc.ini` (line 2: `server_addr`, line 4: `token`)
+3. `publisher/loop_stream.sh` (line 7: `rtspclientsink location`)
 
-### Changing Inference Model
-
-**Quick Swap (TrafficCamNet ↔ YOLOWorld)**:
+Then rebuild and restart:
 ```bash
-# Option 1: TrafficCamNet (default, 4 classes)
-sed -i 's|config_infer_yoloworld.txt|config_infer_primary.txt|' s0_rtsp.py config/file_s3_s4.txt
-
-# Option 2: YOLOWorld (custom detector, network-type=100)
-sed -i 's|config_infer_primary.txt|config_infer_yoloworld.txt|' s0_rtsp.py config/file_s3_s4.txt
-
-# Apply changes
-rm models/*.engine  # Clear cached engines
+./build.sh
+pkill frpc && nohup frpc -c /root/d_final/config/frpc.ini > /var/log/frpc.log 2>&1 &
 ./start.sh
 ```
 
-**Custom Model**:
-1. Add new ONNX to `models/` directory
-2. Create `config/config_infer_yourmodel.txt`:
-   ```ini
-   onnx-file=/models/your_model.onnx
-   num-detected-classes=<number>
-   batch-size=1  # or 2 for s3/s4 dual sources
-   ```
-3. Point configs to new file: `sed -i 's|config_infer_primary.txt|config_infer_yourmodel.txt|' s0_rtsp.py config/file_s3_s4.txt`
-4. Delete old engine files: `rm models/*.engine`
-5. Restart: `./start.sh`
-
-### Performance Validation
-Check FPS in container logs:
+### Relay Configuration (Terraform)
+The relay is **immutable infrastructure**. To change MediaMTX config:
 ```bash
-# Check s0 (live RTSP)
-docker logs ds-s0 | grep "**PERF" | tail
-
-# Check s3/s4 (file loops)
-docker logs ds-files | grep "**PERF" | tail
+cd relay/
+# 1. Edit relay/scripts/startup.sh
+# 2. Destroy and recreate
+export GOOGLE_OAUTH_ACCESS_TOKEN=$(gcloud auth print-access-token)
+terraform destroy -var project_id=fsp-api-1 -auto-approve
+terraform apply -var project_id=fsp-api-1 -auto-approve
+# 3. Get new IP and token
+terraform output external_ip
+terraform output -raw frps_token
+# 4. Update all 3 files with new IP/token
+# 5. Rebuild and restart (see above)
 ```
 
-You should see ~30 FPS steady-state.
-
-### Debugging Streams
-View streams in browser:
-- s0 (live): http://34.14.140.30:8889/s0/
-- s3 (file): http://34.14.140.30:8889/s3/
-- s4 (file): http://34.14.140.30:8889/s4/
-
-Check MediaMTX relay logs:
+### frpc (Local FRP Client)
+**Always restart after config changes**:
 ```bash
-gcloud compute ssh mediamtx-relay --zone=asia-south1-c --command="docker logs mediamtx --tail 50"
+pkill frpc
+nohup frpc -c /root/d_final/config/frpc.ini > /var/log/frpc.log 2>&1 &
 ```
 
-## Relay Edits
-
-### Modifying MediaMTX Config
-The relay at `34.14.140.30` needs to pull from your DeepStream containers:
-
-```yaml
-paths:
-  in_s0:
-    # Camera publishes here
-
-  s0:
-    source: rtsp://<your-machine-ip>:8554/ds-test
-    sourceProtocol: tcp
-    sourceOnDemand: no
-
-  s3:
-    source: rtsp://<your-machine-ip>:8557/ds-test
-    sourceProtocol: tcp
-
-  s4:
-    source: rtsp://<your-machine-ip>:8558/ds-test
-    sourceProtocol: tcp
-```
-
-### Terraform Changes
-- Modify `relay/main.tf` or `relay/scripts/startup.sh`
-- Run `terraform plan` before `terraform apply`
-- Destroy/recreate VM after startup script changes
-
-## FRP Usage (NAT Traversal)
-
-If your DeepStream machine is behind NAT:
+**Check it worked**:
 ```bash
-# Edit config/frpc.ini with your relay's token
-frpc -c config/frpc.ini
-
-# Verify tunnel
-docker logs frpc --tail 20
+tail -10 /var/log/frpc.log
+# Should see: "proxy added: [s0_rtsp s1_rtsp s2_rtsp]"
 ```
+
+## DeepStream Config Changes
+
+### Editing Source Code
+After editing `live_stream.c`, you MUST rebuild:
+```bash
+./build.sh    # Rebuilds ds-s1:latest with new binary
+./stop.sh     # Stop all containers
+./start.sh    # Restart all containers (includes publisher)
+```
+
+Docker uses cached binaries - your edits won't apply until rebuild.
+
+### Changing Inference Model
+```bash
+# Edit live_stream.c line 165 to use different config
+sed -i 's|config_infer_yolov8.txt|config_infer_new.txt|' live_stream.c
+
+# Rebuild and restart
+./build.sh
+rm models/*.engine  # Clear old TensorRT engines
+./start.sh
+```
+
+### OSD/Overlay Changes
+Edit `config/config_osd.txt` then restart:
+```bash
+./start.sh
+```
+
+OSD config is read at startup, no rebuild needed.
+
+## Performance Standards
+
+### 30 FPS is Sacred
+Maintain these settings in `live_stream.c`:
+- `batched-push-timeout=33333` (nvstreammux, line 159)
+- `iframeinterval=30` (encoder, line 181)
+- `live-source=0` (nvstreammux, line 161)
+
+### Batch Size Consistency
+All 3 streams use batch-size=1:
+- nvstreammux: `batch-size=1` (live_stream.c line 158)
+- Inference config: `batch-size=1` (config/config_infer_yolov8.txt line 14)
+- TensorRT engine: Built for batch-size=1
+
+Changing batch size requires:
+1. Edit live_stream.c line 158
+2. Edit `config/config_infer_yolov8.txt` line 14
+3. Delete `models/*.engine`
+4. Rebuild and restart
+
+## TensorRT Engine Management
+
+### First Build (No Cached Engine)
+**IMPORTANT**: Avoid race conditions by building engines serially:
+```bash
+# Stop all containers
+docker stop ds-s0 ds-s1 ds-s2
+
+# Start ONLY s0 to build engine
+docker start ds-s0
+
+# Wait ~3-5 minutes for engine build
+# Watch for "deserialized trt engine" in logs
+
+# Once complete, copy engine to host and restart all
+docker exec ds-s0 cp /app/model_b1_gpu0_fp16.engine /models/yolov8n_b1_gpu0_fp16.engine
+./start.sh
+```
+
+### Rebuilding Engines
+```bash
+rm models/*.engine
+./start.sh    # All containers will try to build - wait for completion
+```
+
+## Debugging Workflow
+
+### Stream Not Working
+```bash
+# 1. Check container is running
+docker ps | grep ds-s
+
+# 2. Check container logs
+docker logs ds-s0 --tail 50
+
+# 3. Check local RTSP server
+ffprobe rtsp://127.0.0.1:8554/ds-test
+
+# 4. Check frpc tunnel
+tail -20 /var/log/frpc.log
+
+# 5. Check relay
+gcloud compute ssh mediamtx-relay --zone=asia-south1-c \
+  --command="docker logs mediamtx --tail 20"
+```
+
+### Don't Modify Working Streams
+If s0 and s1 work but s2 doesn't:
+- **DO**: Debug s2
+- **DON'T**: Change s0 or s1
+
+They have identical architecture (same binary, different stream ID). If one works, the others should too.
 
 ## Git Practices
 
 ### Committing Changes
-- Large binaries (ONNX/engine files) tracked via Git LFS
-- Commit messages: `scope: imperative summary`
-  - Examples:
-    - `config: switch to YOLOv8 detector`
-    - `relay: add path for s5 stream`
-    - `docs: update YOLO model swap instructions`
+```bash
+# After relay IP change, commit all 3 updated files
+git add live_stream.c config/frpc.ini publisher/loop_stream.sh
+git commit -m "config: update relay IP to $(cd relay && terraform output -raw external_ip)"
+```
 
 ### What to Commit
-- **Do commit**: Config files, docs, scripts
-- **Do NOT commit**: TensorRT .engine files (they're machine-specific, auto-generated)
+- **DO commit**: Config files, source code (.c), docs
+- **DON'T commit**: TensorRT .engine files (machine-specific)
 
-## Key Constraints
+### .gitignore
+```
+models/*.engine
+*.pyc
+__pycache__/
+.terraform/
+terraform.tfstate*
+```
 
-1. **30 FPS is sacred**: Keep `batched-push-timeout=33333`, `iframeinterval=30`
-2. **Batch-size awareness**: s0 uses batch-size=1, s3/s4 use batch-size=2
-3. **live-source=0**: Always use this (even for RTSP) for consistent frame pacing
-4. **Python for s0**: Config-only approach causes segfaults; use s0_rtsp.py
+## Viewing Streams
 
-Keep it simple: Python for s0, config for s3/s4, shared inference pipeline.
+### Processed Streams (After YOLOv8)
+- s0: http://34.47.221.242:8889/s0/
+- s1: http://34.47.221.242:8889/s1/
+- s2: http://34.47.221.242:8889/s2/
+
+### Input Streams (Before Processing)
+- in_s0: http://34.47.221.242:8889/in_s0/
+- in_s1: http://34.47.221.242:8889/in_s1/
+- in_s2: http://34.47.221.242:8889/in_s2/
+
+### Local RTSP (For Testing)
+```bash
+ffplay rtsp://127.0.0.1:8554/ds-test  # s0
+ffplay rtsp://127.0.0.1:8555/ds-test  # s1
+ffplay rtsp://127.0.0.1:8556/ds-test  # s2
+```
+
+## Performance Monitoring
+
+### Check FPS
+```bash
+docker logs ds-s0 | grep "**PERF"
+docker logs ds-s1 | grep "**PERF"
+docker logs ds-s2 | grep "**PERF"
+```
+
+Should see ~30 FPS steady-state.
+
+### Check GPU Usage
+```bash
+nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv
+```
+
+Each container uses ~390 MiB GPU memory.
+
+### Check CPU Usage
+```bash
+docker stats --no-stream
+```
+
+Each container should use 4-5% CPU at 30 FPS.
+
+## Common Issues
+
+### "Resetting source" Loop
+**Cause**: Container can't pull from relay (wrong IP, relay down, network issue)
+**Fix**: Check relay IP in live_stream.c line 97, verify relay is running
+
+### "Connection refused" on 9500-9502
+**Cause**: frpc not running or not connected
+**Fix**: Restart frpc and check logs
+
+### Stream Works in in_sX But Not sX
+**Cause**: frpc tunnel not working or relay can't pull from tunnel
+**Fix**:
+1. Verify frpc logs show "proxy added"
+2. Check relay logs for "ready: 1 track"
+3. Restart ds-sX container if stuck
+
+### Changes to live_stream.c Don't Apply
+**Cause**: Forgot to rebuild Docker image
+**Fix**: `./build.sh` before `./start.sh`
+
+### TensorRT Build Hangs/Fails
+**Cause**: Multiple containers trying to build same engine file simultaneously
+**Fix**: Stop all containers, let one build first, then restart all
+
+## Publisher (Test Video Streaming)
+
+### Start Publisher
+```bash
+cd publisher/
+./start.sh    # Streams test video to relay's in_s2
+```
+
+### Stop Publisher
+```bash
+docker stop publisher
+```
+
+### Change Test Video
+Replace `publisher/bowling_bottom_right.mp4` with your video file, then:
+```bash
+cd publisher/
+docker build -t publisher:latest .
+./start.sh
+```
+
+### Publisher Architecture
+- Runs in separate container
+- Loops video file continuously
+- Publishes to `rtsp://34.47.221.242:8554/in_s2` via TCP
+- Good for testing s2 without needing actual camera

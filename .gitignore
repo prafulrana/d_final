@@ -1,12 +1,27 @@
-outputs/
-*.mp4
-node_modules/
-*.log
-*.swp
+# TensorRT engine files (machine-specific, don't commit)
+models/*.engine
+
+# Python cache
 *.pyc
 __pycache__/
+
+# Terraform state
 .terraform/
 terraform.tfstate*
+*.tfvars
 
-# TensorRT engine cache (generated per GPU, don't commit)
-models/*.engine
+# Logs
+*.log
+
+# Temp files
+*.tmp
+*.swp
+*~
+
+# Docker build cache
+.dockerignore
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace

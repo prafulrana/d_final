@@ -22,6 +22,11 @@ resource "random_password" "frps_token" {
   special = false
 }
 
+resource "google_compute_address" "mediamtx_static_ip" {
+  name = "${var.instance_name}-ip"
+  region = replace(var.zone, "/-[a-z]$/", "")
+}
+
 resource "google_compute_instance" "mediamtx" {
   name         = var.instance_name
   machine_type = var.machine_type
@@ -41,7 +46,9 @@ resource "google_compute_instance" "mediamtx" {
   network_interface {
     # Use default VPC
     network = "default"
-    access_config {}
+    access_config {
+      nat_ip = google_compute_address.mediamtx_static_ip.address
+    }
   }
 
   metadata_startup_script = templatefile("${path.module}/scripts/startup.sh", {

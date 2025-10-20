@@ -52,7 +52,7 @@ webrtcICEServers2: []
 api: yes
 apiAddress: ":9997"
 
-# Path configuration (focus on s0 only; others can be enabled later)
+# Path configuration (s0-s2 with YOLOv8 processing)
 pathDefaults:
   source: publisher
   rtspTransport: tcp
@@ -61,8 +61,20 @@ paths:
   in_s0:
     source: publisher
     rtspTransport: tcp
+  in_s1:
+    source: publisher
+    rtspTransport: tcp
+  in_s2:
+    source: publisher
+    rtspTransport: tcp
   s0:
     source: rtsp://127.0.0.1:9500/ds-test
+    rtspTransport: tcp
+  s1:
+    source: rtsp://127.0.0.1:9501/ds-test
+    rtspTransport: tcp
+  s2:
+    source: rtsp://127.0.0.1:9502/ds-test
     rtspTransport: tcp
 EOF
 
