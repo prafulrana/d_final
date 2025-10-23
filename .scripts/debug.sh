@@ -18,7 +18,7 @@ echo ""
 
 # RTSP Servers
 echo "[RTSP Servers]"
-for i in 0 1 2; do
+for i in 0 1 2 3; do
     PORT=$((8554 + i))
     if ss -tlnp | grep -q ":${PORT} "; then
         echo "  ✓ s${i} on ${PORT}"
@@ -51,7 +51,7 @@ echo "[Relay (in_s2 input)]"
 echo ""
 
 # Container logs
-for container in ds-s0 ds-s1 ds-s2; do
+for container in ds-s0 ds-s1 ds-s2 ds-s3; do
     echo "[$container Logs (last 5 lines)]"
     docker logs "$container" --tail 5 2>&1 | sed 's/^/  /' || echo "  (container not found)"
     echo ""

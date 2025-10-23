@@ -9,7 +9,7 @@ FAIL=0
 
 # Check 1: Containers running
 echo "[1/6] Checking containers..."
-EXPECTED_CONTAINERS=("ds-s0" "ds-s1" "ds-s2")
+EXPECTED_CONTAINERS=("ds-s0" "ds-s1" "ds-s2" "ds-s3")
 for container in "${EXPECTED_CONTAINERS[@]}"; do
     if docker ps --format '{{.Names}}' | grep -q "^${container}$"; then
         echo "  ✓ $container running"
@@ -33,7 +33,7 @@ echo ""
 
 # Check 3: RTSP servers responding
 echo "[3/6] Checking RTSP servers..."
-for i in 0 1 2; do
+for i in 0 1 2 3; do
     PORT=$((8554 + i))
     if ss -tlnp | grep -q ":${PORT} "; then
         echo "  ✓ s${i} RTSP server listening on ${PORT}"
@@ -62,7 +62,7 @@ echo ""
 
 # Check 5: DeepStream pipelines initialized
 echo "[5/6] Checking DeepStream pipelines..."
-for i in 0 1 2; do
+for i in 0 1 2 3; do
     if docker logs ds-s${i} 2>&1 | grep -q "Pipeline set to PLAYING"; then
         echo "  ✓ s${i} pipeline PLAYING"
     else
@@ -75,10 +75,10 @@ echo ""
 # Check 6: GPU usage
 echo "[6/6] Checking GPU..."
 GPU_PROCS=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | wc -l)
-if [ "$GPU_PROCS" -ge 3 ]; then
+if [ "$GPU_PROCS" -ge 4 ]; then
     echo "  ✓ GPU in use ($GPU_PROCS processes)"
 else
-    echo "  ⚠ GPU usage looks low ($GPU_PROCS processes)"
+    echo "  ⚠ GPU usage looks low ($GPU_PROCS processes, expected 4)"
 fi
 echo ""
 

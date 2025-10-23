@@ -78,13 +78,20 @@ Docker uses cached binaries - your edits won't apply until rebuild.
 
 ### Changing Inference Model
 ```bash
-# Edit live_stream.c line 150 to use different config
+# 1. Create new inference config
+cp config/config_infer_yolov8.txt config/config_infer_new.txt
+vim config/config_infer_new.txt
+# Update: onnx-file=/models/new_model.onnx
+# Update: model-engine-file=/models/new_model_b1_gpu0_fp16.engine
+
+# 2. Edit live_stream.c line 150 to use different config
 sed -i 's|config_infer_yolov8.txt|config_infer_new.txt|' live_stream.c
 
-# Rebuild and restart
+# 3. Rebuild and restart (no engine deletion needed)
 ./build.sh
-rm models/*.engine  # Clear old TensorRT engines
 ./ds restart
+
+# DeepStream auto-builds new engine, old engines remain cached
 ```
 
 ## Performance Standards
@@ -109,27 +116,57 @@ Changing batch size requires:
 
 ## TensorRT Engine Management
 
-### First Build (No Cached Engine)
-**IMPORTANT**: Avoid race conditions by building engines serially:
+### Critical Rule: NEVER Delete Engines
+**DO NOT run `rm models/*.engine`** - engines are cached for a reason.
+
+TensorRT engines:
+- Are stored in `/root/d_final/models/*.engine` (bind-mounted to `/models/` in containers)
+- **Persist across container restarts** by design
+- Take 3-5 minutes to build (YOLOv8n) or 5-10 minutes (YOLOv8m)
+- Are **automatically rebuilt by DeepStream** when needed
+
+### When Engines Auto-Rebuild
+DeepStream detects and rebuilds engines automatically when:
+1. Engine file doesn't exist
+2. ONNX model is newer than engine
+3. Config changes (batch size, precision, etc.)
+
+**You don't need to delete engines manually** - DeepStream handles this.
+
+### Swapping Models Correctly
 ```bash
-# Stop all containers
-docker stop ds-s0 ds-s1 ds-s2
+# Example: Deploy new bowling model to s3
 
-# Start ONLY s0 to build engine
-docker start ds-s0
+# 1. Export ONNX with fixed dimensions
+docker run --rm --gpus all -v /root/d_final/training:/data \
+  ultralytics/ultralytics:latest yolo export \
+  model=/data/path/to/best.pt format=onnx imgsz=1280 dynamic=False simplify=True
 
-# Wait ~3-5 minutes for engine build
-# Watch for "deserialized trt engine" in logs
+# 2. Copy to models directory
+cp /root/d_final/training/path/best.onnx /root/d_final/models/new_model.onnx
 
-# Once complete, copy engine to host and restart all
-docker exec ds-s0 cp /app/model_b1_gpu0_fp16.engine /models/yolov8n_b1_gpu0_fp16.engine
-./start.sh
+# 3. Update config
+vim config/config_infer_bowling.txt
+# onnx-file=/models/new_model.onnx
+# model-engine-file=/models/new_model_b1_gpu0_fp16.engine
+
+# 4. Restart - DeepStream builds engine automatically
+./ds restart
+
+# That's it! No manual engine deletion needed.
 ```
 
-### Rebuilding Engines
+### Only Delete Engines If
+1. **Engine is corrupted** - crashes on load with deserialize errors
+2. **Testing ONNX export** - want to force rebuild to verify compatibility
+3. **Disk cleanup** - removing old unused model engines
+
 ```bash
-rm models/*.engine
-./ds restart    # All containers will try to build - wait for completion
+# Delete specific engine only
+rm /root/d_final/models/old_model_b1_gpu0_fp16.engine
+
+# NEVER do this (deletes all engines):
+# rm /root/d_final/models/*.engine  ❌
 ```
 
 ## Debugging Workflow

@@ -18,11 +18,12 @@ COPY live_stream.c /app/
 # Copy YOLO parser library
 COPY libnvdsinfer_custom_impl_Yolo.so /app/
 
-# Compile binary
+# Compile binary (supports both portrait and landscape via parameter)
 RUN gcc -o /app/live_stream /app/live_stream.c \
     $(pkg-config --cflags --libs gstreamer-1.0 gstreamer-rtsp-server-1.0) \
     -I/opt/nvidia/deepstream/deepstream/sources/includes \
     -L/opt/nvidia/deepstream/deepstream/lib \
+    -lnvdsgst_meta -lnvds_meta \
     -Wl,-rpath=/opt/nvidia/deepstream/deepstream/lib
 
 # Default command (will be overridden by start.sh with stream ID)

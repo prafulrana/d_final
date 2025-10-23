@@ -12,7 +12,7 @@ d_final/
 ├── relay                       # Remote relay manager (restart/status)
 ├── build.sh                    # Docker image builder
 │
-├── live_stream.c               # Parameterized C binary (takes stream ID 0/1/2)
+├── live_stream.c               # DRY C binary (takes stream ID 0-3, orientation, config)
 ├── Dockerfile.s1               # Builds ds-s1:latest with live_stream binary
 ├── libnvdsinfer_custom_impl_Yolo.so  # YOLOv8 custom parser library
 │
@@ -23,21 +23,61 @@ d_final/
 │       └── frpc.ini           # FRP client config (CONTAINS RELAY IP + TOKEN)
 │
 ├── config/
-│   └── config_infer_yolov8.txt # YOLOv8n inference config
+│   ├── config_infer_yolov8.txt    # YOLOv8n COCO (s0-s2, 80 classes)
+│   └── config_infer_bowling.txt   # YOLOv8n bowling (s3, 1 class)
 │
 ├── models/
-│   ├── yolov8n.onnx           # YOLOv8n model
-│   ├── coco_labels.txt        # COCO class labels
+│   ├── yolov8n.onnx           # YOLOv8n COCO model (s0-s2)
+│   ├── bowling.onnx           # YOLOv8n bowling model (s3)
+│   ├── coco_labels.txt        # COCO class labels (80 classes)
+│   ├── bowling_labels.txt     # Bowling class label (1 class)
 │   └── *.engine               # TensorRT engine cache (auto-generated)
 │
-│   ├── loop_stream.sh         # Publish script (loops video to in_s2)
-│   └── bowling_bottom_right.mp4  # Portrait test video
+├── training/                  # Training artifacts (gitignored)
+│   ├── DeepStream-Yolo/       # ONNX export scripts
+│   └── bowling/               # Dataset + training runs
 │
 └── relay_infra/               # Terraform infrastructure for relay
     ├── main.tf                # MediaMTX relay VM
     ├── scripts/startup.sh     # VM startup script (MediaMTX + frps server)
     └── variables.tf           # Terraform variables
 ```
+
+## Training Directory
+
+```
+training/
+├── train_bowling.py                        # Training script for bowling models
+├── labels.txt                              # Class label (bowling-ball)
+│
+├── Bowling-Pin-Detection--4/               # Roboflow dataset (downloaded)
+│   ├── train/images/                       # 868 training images
+│   ├── valid/images/                       # 154 validation images
+│   ├── test/images/                        # Test images
+│   ├── data.yaml                           # Dataset config (1 class: bowling-ball)
+│   └── README.roboflow.txt                 # Dataset info
+│
+├── bowling_real_dataset/                   # Custom labeled dataset (experimental)
+│   └── ...auto-labeled frames
+│
+└── roboflow_bowling/                       # Training run outputs
+    ├── bowling_1280_m_b8/                  # YOLOv8m @ 1280x1280, batch=8 ✓ PRODUCTION
+    │   ├── weights/
+    │   │   ├── best.pt                     # Epoch 70, 92.7% precision, 88.9% recall
+    │   │   ├── best.onnx                   # Exported with dynamic=False
+    │   │   └── last.pt                     # Final epoch checkpoint
+    │   ├── results.png                     # Training curves
+    │   └── confusion_matrix.png            # Validation metrics
+    │
+    └── bowling_1280_m/                     # Earlier run (batch=16, OOM issues)
+        └── weights/
+```
+
+**Key Points:**
+- `Bowling-Pin-Detection--4/` is gitignored (can re-download from Roboflow)
+- Training outputs (`roboflow_bowling/`) are gitignored except metadata
+- Production models copied to `/root/d_final/models/` and committed
+- Use Ultralytics export with `dynamic=False` for DeepStream compatibility
 
 ## Key Files
 
@@ -87,17 +127,18 @@ d_final/
 ## Architecture Summary
 
 ### Current Setup
-- **3 DeepStream containers**: ds-s0, ds-s1, ds-s2
-- **All pull from relay**: `rtsp://34.47.221.242:8554/in_s{0,1,2}`
-- **All serve locally**: `rtsp://localhost:855{4,5,6}/ds-test`
+- **4 DeepStream containers**: ds-s0, ds-s1, ds-s2, ds-s3
+- **All pull from relay**: `rtsp://34.47.221.242:8554/in_s{0,1,2,3}`
+- **All serve locally**: `rtsp://localhost:855{4,5,6,7}/ds-test`
 - **frpc tunnels**: localhost:855X → relay:950X
-- **Relay outputs**: http://34.47.221.242:8889/s{0,1,2}/
+- **Relay outputs**: http://34.47.221.242:8889/s{0,1,2,3}/
 
 ### Data Flow
 ```
-Camera → in_s0 (relay) → ds-s0 (YOLOv8) → localhost:8554 → frpc → relay:9500 → s0 (WebRTC)
-Camera → in_s1 (relay) → ds-s1 (YOLOv8) → localhost:8555 → frpc → relay:9501 → s1 (WebRTC)
-Camera → in_s2 (relay) → ds-s2 (YOLOv8) → localhost:8556 → frpc → relay:9502 → s2 (WebRTC)
+Camera → in_s0 (relay) → ds-s0 (COCO YOLOv8) → localhost:8554 → frpc → relay:9500 → s0 (WebRTC)
+Camera → in_s1 (relay) → ds-s1 (COCO YOLOv8) → localhost:8555 → frpc → relay:9501 → s1 (WebRTC)
+Camera → in_s2 (relay) → ds-s2 (COCO YOLOv8) → localhost:8556 → frpc → relay:9502 → s2 (WebRTC)
+Bowling → in_s3 (relay) → ds-s3 (Bowling YOLOv8) → localhost:8557 → frpc → relay:9503 → s3 (WebRTC)
 ```
 
 ### Why This Architecture?
@@ -151,10 +192,14 @@ rm models/*.engine
 ./ds restart
 ```
 
-### Rebuild TensorRT Engine
+### Rebuild TensorRT Engine (Rarely Needed)
 ```bash
-rm models/*.engine    # Clear cached engines
-./ds restart          # All containers rebuild engines
+# Only if engine is corrupted or you need to force rebuild:
+rm /root/d_final/models/specific_model.engine  # Delete specific engine only
+./ds restart
+
+# NEVER delete all engines with wildcard:
+# rm models/*.engine  ❌ Wastes time rebuilding everything
 ```
 
 ## What NOT to Do

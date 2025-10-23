@@ -17,6 +17,10 @@ terraform.tfstate*
 *.tmp
 *.swp
 *~
+*.zip
+plan.md
+asd*.jpg
+asd*.png
 
 # Docker build cache
 .dockerignore
@@ -25,3 +29,40 @@ terraform.tfstate*
 .vscode/
 .idea/
 *.code-workspace
+
+# Training outputs (large files, transient data)
+# Datasets
+training/*/train/
+training/*/valid/
+training/*/test/
+training/bowling_real_dataset/
+training/bowling_real_frames/
+
+# Model weights and checkpoints
+training/*/weights/*.pt
+training/*/*/weights/*.pt
+training/roboflow_bowling/*/weights/*.pt
+
+# Exported ONNX (except production models in /models/)
+training/*/weights/*.onnx
+training/*/*/weights/*.onnx
+
+# Training logs and caches
+training/*/*.log
+training/*/*/*.log
+training/*/runs/
+training/*/*/runs/
+*.cache
+
+# Ultralytics cache
+training/*/*.cache
+
+# Roboflow datasets (can re-download)
+training/Bowling-Pin-Detection--*/
+
+# Git submodules
+training/DeepStream-Yolo/.git/
+
+# Temporary ONNX exports
+*.onnx.tmp
+training/*.onnx
