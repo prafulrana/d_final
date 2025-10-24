@@ -11,8 +11,8 @@ static GMainLoop *loop = NULL;
 static guint throw_counter = 0;
 static GHashTable *tracked_objects = NULL;  /* Track object states: Y position */
 
-#define START_ZONE_Y 280   /* Ball appears here (top of visible area) */
-#define END_ZONE_Y 160     /* Ball completes throw here (bottom) */
+#define START_ZONE_Y 1200  /* Ball appears here (bottom/throw line) */
+#define END_ZONE_Y 160     /* Ball completes throw here (top/pins) */
 
 typedef struct {
     gboolean seen_at_start;

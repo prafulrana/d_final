@@ -203,52 +203,111 @@ sed -i 's|config_infer_yolov8.txt|config_infer_new.txt|' live_stream.c
 
 ## TensorRT Engine Management
 
-### Engine Caching (CRITICAL)
-**NEVER DELETE .engine FILES** - TensorRT engines are cached in `/root/d_final/models/` which is bind-mounted to `/models/` inside containers.
+### How Engine Caching Actually Works (CRITICAL UNDERSTANDING)
 
-- **Engines persist across container restarts** - this is by design
-- **DeepStream auto-rebuilds when needed** - if ONNX changes or engine is missing
-- **Building takes 3-5 minutes** - avoid unnecessary rebuilds
+**DeepStream saves engines to `/app/`, NOT `/models/`**:
+- Config specifies: `model-engine-file=/models/xxx.engine` (where it LOADS from)
+- DeepStream saves to: `/app/model_b1_gpu0_fp16.engine` (hardcoded in DeepStream-YOLO)
+- `/app/` is NOT bind-mounted → engines lost on container restart
+- `/models/` IS bind-mounted → engines persist across restarts
 
-### How Engine Caching Works
-```
-Host: /root/d_final/models/*.engine
-      ↓ (bind mount)
-Container: /models/*.engine
-      ↓ (config points to)
-config/config_infer_*.txt: model-engine-file=/models/xxx.engine
-```
+**The Problem**: First run builds engine to `/app/`, second run can't find it in `/models/`, rebuilds again.
 
-When you restart containers, engines are already there - no rebuild needed.
+**The Solution**: Use `.scripts/cache_engine.sh` to copy engines from `/app/` → `/models/` with correct names.
 
-### When Engines Auto-Rebuild
-DeepStream automatically rebuilds engines when:
-1. Engine file doesn't exist at the path in config
-2. ONNX model timestamp is newer than engine timestamp
-3. GPU architecture changes (different machine)
+### Engine Cache Management Script
 
-### Swapping Models (No Manual Engine Deletion Needed)
+Use `.scripts/cache_engine.sh` for all engine operations:
+
 ```bash
-# 1. Copy new ONNX to models/
-cp /path/to/new_model.onnx /root/d_final/models/
+# After first container start (engines built in /app/)
+./.scripts/cache_engine.sh copy     # Copy engines to /models/ with correct names
 
-# 2. Update config to point to new ONNX and engine path
-vim config/config_infer_bowling.txt
-# Change: onnx-file=/models/new_model.onnx
-# Change: model-engine-file=/models/new_model_b1_gpu0_fp16.engine
+# Check engine locations
+./.scripts/cache_engine.sh list     # Show engines in containers + /models/
 
-# 3. Restart container - engine builds automatically if missing
+# Force clean rebuild (rarely needed)
+./.scripts/cache_engine.sh clean    # Delete cached engines from /models/
+./ds restart                        # Containers rebuild in /app/
+./.scripts/cache_engine.sh copy     # Copy to /models/ again
+```
+
+### Typical Workflow: Adding New Model
+
+```bash
+# 1. Train and export ONNX (in training/)
+cp training/path/to/best.onnx models/new_model.onnx
+
+# 2. Create/update config
+vim config/config_infer_new.txt
+# onnx-file=/models/new_model.onnx
+# model-engine-file=/models/new_model_b1_gpu0_fp16.engine
+
+# 3. Update container config in ds script or live_stream.c
+# 4. Start containers (engines build in /app/)
 ./ds restart
 
-# DeepStream will see the new ONNX, notice no engine exists, and build it
+# 5. Wait for "Pipeline set to PLAYING" (3-10 min depending on model)
+docker logs ds-s2 | grep "PLAYING"
+
+# 6. Copy engines to cache
+./.scripts/cache_engine.sh copy
+
+# 7. Restart to verify cache reuse (should be instant)
+./ds restart
+docker logs ds-s2 | grep "deserialized trt engine"
+# Should see: "deserialized trt engine from :/models/new_model_b1_gpu0_fp16.engine"
+```
+
+### How Caching Works After Setup
+
+```
+First Run (no cache):
+1. DeepStream checks /models/xxx.engine → not found
+2. Builds engine from ONNX (3-10 minutes)
+3. Saves to /app/model_b1_gpu0_fp16.engine
+4. Runs inference
+
+Manual step:
+5. ./.scripts/cache_engine.sh copy → copies /app/ → /models/ with correct name
+
+Second Run (with cache):
+1. DeepStream checks /models/xxx.engine → found!
+2. Deserializes from cache (instant)
+3. Runs inference
+
+Without manual copy, step 1 fails every restart → rebuild loop
+```
+
+### When to Use cache_engine.sh
+
+**ALWAYS run after**:
+1. First deployment of new model
+2. Rebuilding engines (after ONNX change)
+3. Moving to different GPU architecture
+
+**Check cache status**:
+```bash
+./.scripts/cache_engine.sh list
+```
+
+**Expected output after successful cache**:
+```
+=== Engines in /models/ (bind-mounted, persistent) ===
+-rw-r--r-- 1 root root 56M Oct 23 14:03 bowling_roboflow_1280_b1_gpu0_fp16.engine
+-rw-r--r-- 1 root root 11M Oct 23 14:05 yolov8n_b1_gpu0_fp16.engine
 ```
 
 ### Only Delete Engines If
-1. **Debugging engine corruption** - engine crashes on load
-2. **Forcing rebuild for testing** - want to verify ONNX export is correct
-3. **Disk space cleanup** - removing unused old engines
+1. **Testing fresh build** - want to time build process
+2. **Debugging engine corruption** - engine crashes on deserialize
+3. **Disk cleanup** - removing old unused engines
 
-**In these cases only**: `rm /root/d_final/models/specific_model.engine`
+```bash
+# Delete specific engine
+./.scripts/cache_engine.sh clean    # Or manually:
+rm /root/d_final/models/old_model_b1_gpu0_fp16.engine
+```
 
 ## Performance
 
@@ -358,4 +417,7 @@ vim config/config_infer_bowling.txt
 - **Batch size matters**: batch=8 works with concurrent DeepStream; batch=16 needs more GPU memory
 - **Early stopping works**: YOLOv8m reached 92.7% precision at epoch 70 with patience=20
 - **Roboflow datasets**: Company datasets often better than auto-labeled custom data
-- **Export format**: Ultralytics CLI export, not DeepStream-Yolo scripts (simpler, works well)
+- **Export format**: Use DeepStream-Yolo export scripts with Ultralytics base image for proper output layer format
+  - Script: `training/scripts/export_deepstream.sh`
+  - Uses DeepStream-Yolo's export_yoloV8.py with DeepStreamOutput layer
+  - Ensures compatibility with custom parser (libnvdsinfer_custom_impl_Yolo.so)

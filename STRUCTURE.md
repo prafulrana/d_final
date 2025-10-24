@@ -17,6 +17,7 @@ d_final/
 ├── libnvdsinfer_custom_impl_Yolo.so  # YOLOv8 custom parser library
 │
 ├── .scripts/                   # Hidden utilities
+│   ├── cache_engine.sh        # TensorRT engine cache manager
 │   ├── check.sh               # Health check validation
 │   ├── debug.sh               # Debugging diagnostics
 │   └── frpc/
@@ -34,7 +35,9 @@ d_final/
 │   └── *.engine               # TensorRT engine cache (auto-generated)
 │
 ├── training/                  # Training artifacts (gitignored)
-│   ├── DeepStream-Yolo/       # ONNX export scripts
+│   ├── scripts/
+│   │   └── export_deepstream.sh  # DeepStream-Yolo ONNX export wrapper
+│   ├── DeepStream-Yolo/       # Custom ONNX export scripts (cloned repo)
 │   └── bowling/               # Dataset + training runs
 │
 └── relay_infra/               # Terraform infrastructure for relay
@@ -110,6 +113,7 @@ training/
 - **.scripts/frpc/frpc.ini**: FRP client settings (**CONTAINS RELAY IP AND TOKEN**)
 
 ### Utilities (Hidden in .scripts/)
+- **.scripts/cache_engine.sh**: TensorRT engine cache manager (copy/list/clean)
 - **.scripts/check.sh**: Health check validation (used by `./system status`)
 - **.scripts/debug.sh**: Debugging diagnostics (check container logs, RTSP servers, etc.)
 

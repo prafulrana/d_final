@@ -1,0 +1,13 @@
+train: train/images
+val: valid/images
+test: test/images
+
+nc: 1
+names: ['bowling-ball']
+
+roboflow:
+  workspace: fsp-ps1f9
+  project: bowling-qgxfo
+  version: 3
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/fsp-ps1f9/bowling-qgxfo/dataset/3

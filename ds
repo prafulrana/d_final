@@ -19,14 +19,14 @@ case "$1" in
         docker run -d --name ds-s2 --gpus all --net=host \
           -v /root/d_final/config:/config \
           -v /root/d_final/models:/models \
-          ds-s1:latest /app/live_stream 2 portrait
+          ds-s1:latest /app/live_stream 2 portrait /config/config_infer_bowling_640.txt
 
         docker run -d --name ds-s3 --gpus all --net=host \
           -v /root/d_final/config:/config \
           -v /root/d_final/models:/models \
-          ds-s1:latest /app/live_stream 3 portrait
+          ds-s1:latest /app/live_stream 3 portrait /config/config_infer_bowling.txt
 
-        echo "✓ DeepStream containers started (s0-s3, all portrait mode)"
+        echo "✓ DeepStream containers started (s0-s1: COCO, s2: bowling 640, s3: bowling 1280)"
         ;;
     stop)
         docker stop ds-s0 ds-s1 ds-s2 ds-s3 2>/dev/null

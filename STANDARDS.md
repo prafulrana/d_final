@@ -116,58 +116,129 @@ Changing batch size requires:
 
 ## TensorRT Engine Management
 
-### Critical Rule: NEVER Delete Engines
-**DO NOT run `rm models/*.engine`** - engines are cached for a reason.
+### Critical Understanding: DeepStream Saves to /app/, NOT /models/
 
-TensorRT engines:
-- Are stored in `/root/d_final/models/*.engine` (bind-mounted to `/models/` in containers)
-- **Persist across container restarts** by design
-- Take 3-5 minutes to build (YOLOv8n) or 5-10 minutes (YOLOv8m)
-- Are **automatically rebuilt by DeepStream** when needed
+**The Problem**:
+- Config says: `model-engine-file=/models/xxx.engine` (where DeepStream LOADS from)
+- DeepStream saves to: `/app/model_b1_gpu0_fp16.engine` (hardcoded location)
+- `/app/` is ephemeral (lost on restart), `/models/` is bind-mounted (persistent)
+- Without manual intervention, engines rebuild on every container restart
 
-### When Engines Auto-Rebuild
-DeepStream detects and rebuilds engines automatically when:
-1. Engine file doesn't exist
-2. ONNX model is newer than engine
-3. Config changes (batch size, precision, etc.)
+**The Solution**: Use `.scripts/cache_engine.sh` to copy engines from `/app/` → `/models/`
 
-**You don't need to delete engines manually** - DeepStream handles this.
+### Standard Operating Procedure: Adding New Model
 
-### Swapping Models Correctly
+**ALWAYS follow this sequence**:
+
 ```bash
-# Example: Deploy new bowling model to s3
+# 1. Export ONNX using DeepStream-Yolo method (ensures proper output layer)
+cd /root/d_final/training
+./scripts/export_deepstream.sh path/to/best.pt 640
+# This uses DeepStream-Yolo's export_yoloV8.py with Ultralytics container
+# Adds DeepStreamOutput layer for compatibility with custom parser
 
-# 1. Export ONNX with fixed dimensions
-docker run --rm --gpus all -v /root/d_final/training:/data \
-  ultralytics/ultralytics:latest yolo export \
-  model=/data/path/to/best.pt format=onnx imgsz=1280 dynamic=False simplify=True
+# 2. Copy ONNX to production models/
+cp training/path/to/best.pt.onnx models/new_model.onnx
 
-# 2. Copy to models directory
-cp /root/d_final/training/path/best.onnx /root/d_final/models/new_model.onnx
+# 3. Create/update config file
+cp config/config_infer_yolov8.txt config/config_infer_new.txt
+vim config/config_infer_new.txt
+# Update: onnx-file=/models/new_model.onnx
+# Update: model-engine-file=/models/new_model_b1_gpu0_fp16.engine
+# Update: num-detected-classes=X
+# Update: labelfile-path=/models/new_labels.txt
 
-# 3. Update config
-vim config/config_infer_bowling.txt
-# onnx-file=/models/new_model.onnx
-# model-engine-file=/models/new_model_b1_gpu0_fp16.engine
+# 4. Update ds script or live_stream.c to use new config
+# For s2: Edit ds script line 22 (config path argument)
+# Or: Edit live_stream.c default config logic
 
-# 4. Restart - DeepStream builds engine automatically
+# 5. Rebuild Docker image (if live_stream.c changed)
+./build.sh
+
+# 6. Start containers - engines build in /app/ (3-10 min)
 ./ds restart
 
-# That's it! No manual engine deletion needed.
+# 7. Wait for "Pipeline set to PLAYING"
+docker logs ds-s2 --follow | grep "PLAYING"
+# Press Ctrl+C when you see: "Pipeline set to PLAYING"
+
+# 8. CRITICAL: Copy engines to persistent cache
+./.scripts/cache_engine.sh copy
+
+# 9. Verify cache with list command
+./.scripts/cache_engine.sh list
+# Should show engines in both /app/ (containers) and /models/ (host)
+
+# 10. Test cache reuse - restart should be instant (no rebuild)
+./ds restart
+docker logs ds-s2 2>&1 | grep "deserialized trt engine"
+# Should see: "deserialized trt engine from :/models/new_model_b1_gpu0_fp16.engine"
+
+# 11. Verify no rebuild happened
+docker logs ds-s2 2>&1 | grep "Building the TensorRT Engine"
+# Should be EMPTY (no output = good, used cache)
 ```
 
-### Only Delete Engines If
-1. **Engine is corrupted** - crashes on load with deserialize errors
-2. **Testing ONNX export** - want to force rebuild to verify compatibility
-3. **Disk cleanup** - removing old unused model engines
+### cache_engine.sh Commands
 
 ```bash
-# Delete specific engine only
-rm /root/d_final/models/old_model_b1_gpu0_fp16.engine
+# Copy engines from /app/ to /models/ with correct names
+./.scripts/cache_engine.sh copy
 
-# NEVER do this (deletes all engines):
-# rm /root/d_final/models/*.engine  ❌
+# List engines in containers + /models/
+./.scripts/cache_engine.sh list
+
+# Delete cached engines (force rebuild)
+./.scripts/cache_engine.sh clean
 ```
+
+### When to Run cache_engine.sh copy
+
+**ALWAYS run after**:
+1. First deployment of new model
+2. Any ONNX model change (forces rebuild)
+3. Moving to different GPU (different CUDA compute capability)
+4. Config changes that affect engine (batch size, precision, etc.)
+
+**Skip if**:
+- Just restarting containers with existing cached engines
+- No model or config changes
+
+### How to Verify Caching Works
+
+**Good (using cache)**:
+```bash
+docker logs ds-s2 2>&1 | grep -i engine | head -5
+```
+Output should show:
+```
+deserialized trt engine from :/models/xxx_b1_gpu0_fp16.engine
+Use deserialized engine model: /models/xxx_b1_gpu0_fp16.engine
+```
+Time to PLAYING: <10 seconds
+
+**Bad (rebuilding)**:
+```
+deserialize engine from file :/models/xxx.engine failed
+Building the TensorRT Engine
+```
+Time to PLAYING: 3-10 minutes
+
+### Only Delete Engines If
+
+1. **Testing fresh build** - benchmarking build time
+2. **Engine corrupted** - crashes with deserialize errors
+3. **Disk cleanup** - removing old unused engines
+
+```bash
+# Delete all cached engines
+./.scripts/cache_engine.sh clean
+
+# Or delete specific engine
+rm /root/d_final/models/old_model_b1_gpu0_fp16.engine
+```
+
+After deletion, containers will rebuild engines in `/app/` on next start. **Remember to run `./.scripts/cache_engine.sh copy` after rebuild!**
 
 ## Debugging Workflow
 

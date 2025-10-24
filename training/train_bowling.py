@@ -5,6 +5,7 @@ Trains YOLOv8 models with consistent, reproducible parameters
 """
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -13,7 +14,7 @@ from datetime import datetime
 # Default hyperparameters (based on working 640 model @ batch=16)
 DEFAULT_CONFIG = {
     'model': 'yolov8n.pt',
-    'data': '/data/bowling/data.yaml',
+    'data': '/data/bowling-ball-1/data.yaml',
     'epochs': 100,
     'batch': 16,
     'imgsz': 640,
@@ -144,7 +145,9 @@ def export_onnx(args):
     print(f"Command: {' '.join(cmd)}\n")
 
     try:
-        subprocess.run(cmd, check=True, cwd='/root/d_final/training')
+        # Use /data when running in docker, or current directory otherwise
+        export_cwd = '/data' if os.path.exists('/data/DeepStream-Yolo') else os.path.dirname(__file__)
+        subprocess.run(cmd, check=True, cwd=export_cwd)
         onnx_path = weights_path.with_suffix('.pt.onnx')
         print(f"\n{'='*60}")
         print(f"✓ ONNX export completed!")

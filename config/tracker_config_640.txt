@@ -1,0 +1,14 @@
+[tracker]
+tracker-width=640
+tracker-height=640
+ll-lib-file=/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so
+ll-config-file=/config/tracker_iou_config_640.txt
+gpu-id=0
+enable-batch-process=1
+enable-past-frame=1
+display-tracking-id=1
+
+[iou_config]
+min-iou-threshold=0.02
+tracker-width=640
+tracker-height=640
