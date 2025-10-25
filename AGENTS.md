@@ -226,6 +226,9 @@ Use `.scripts/cache_engine.sh` for all engine operations:
 # Check engine locations
 ./.scripts/cache_engine.sh list     # Show engines in containers + /models/
 
+# Verify configs point to existing cached engines
+./.scripts/cache_engine.sh verify   # Check config → engine mappings
+
 # Force clean rebuild (rarely needed)
 ./.scripts/cache_engine.sh clean    # Delete cached engines from /models/
 ./ds restart                        # Containers rebuild in /app/
@@ -253,7 +256,10 @@ docker logs ds-s2 | grep "PLAYING"
 # 6. Copy engines to cache
 ./.scripts/cache_engine.sh copy
 
-# 7. Restart to verify cache reuse (should be instant)
+# 7. Verify configs point to cached engines
+./.scripts/cache_engine.sh verify
+
+# 8. Restart to verify cache reuse (should be instant)
 ./ds restart
 docker logs ds-s2 | grep "deserialized trt engine"
 # Should see: "deserialized trt engine from :/models/new_model_b1_gpu0_fp16.engine"

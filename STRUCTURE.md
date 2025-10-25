@@ -196,14 +196,21 @@ rm models/*.engine
 ./ds restart
 ```
 
-### Rebuild TensorRT Engine (Rarely Needed)
+### Manage TensorRT Engine Cache
 ```bash
-# Only if engine is corrupted or you need to force rebuild:
-rm /root/d_final/models/specific_model.engine  # Delete specific engine only
-./ds restart
+# Copy engines from containers to persistent cache (after first build)
+./.scripts/cache_engine.sh copy
 
-# NEVER delete all engines with wildcard:
-# rm models/*.engine  ❌ Wastes time rebuilding everything
+# Verify configs point to cached engines
+./.scripts/cache_engine.sh verify
+
+# List engines in containers and /models/
+./.scripts/cache_engine.sh list
+
+# Force rebuild (rarely needed - only if engine corrupted)
+./.scripts/cache_engine.sh clean
+./ds restart
+./.scripts/cache_engine.sh copy  # Copy rebuilt engines back to cache
 ```
 
 ## What NOT to Do

@@ -1,5 +1,5 @@
 [property]
 min-iou-threshold=0.02
-tracker-width=1280
-tracker-height=1280
+tracker-width=640
+tracker-height=640
 max-shadow-tracking-age=30

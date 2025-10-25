@@ -39,6 +39,7 @@ training/bowling_real_dataset/
 training/bowling_real_frames/
 
 # Model weights and checkpoints
+training/*.pt
 training/*/weights/*.pt
 training/*/*/weights/*.pt
 training/roboflow_bowling/*/weights/*.pt
@@ -59,6 +60,8 @@ training/*/*.cache
 
 # Roboflow datasets (can re-download)
 training/Bowling-Pin-Detection--*/
+training/pins_training/
+training/pins_v12/
 
 # Git submodules
 training/DeepStream-Yolo/.git/

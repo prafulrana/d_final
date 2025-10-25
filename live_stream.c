@@ -158,7 +158,7 @@ on_pad_added(GstElement *element, GstPad *pad, gpointer data)
 
 int main(int argc, char *argv[])
 {
-    GstElement *pipeline, *source, *streammux, *pgie, *nvtracker, *nvvidconv, *nvosd;
+    GstElement *pipeline, *source, *streammux, *pgie, *sgie, *nvtracker, *nvvidconv, *nvosd;
     GstElement *nvvidconv_postosd, *caps, *encoder, *queue, *h264parser, *rtppay, *sink;
     GstBus *bus;
     guint bus_watch_id;
@@ -173,7 +173,7 @@ int main(int argc, char *argv[])
         g_printerr("Usage: %s <stream_id> [orientation] [config_file]\n", argv[0]);
         g_printerr("  stream_id: 0-3\n");
         g_printerr("  orientation: portrait or landscape (default: portrait)\n");
-        g_printerr("  config_file: path to inference config (default: /config/config_infer_yolov8.txt for s0-s2, /config/config_infer_bowling.txt for s3)\n");
+        g_printerr("  config_file: path to inference config (default: /config/config_infer_yolo12x_1280.txt for s0, /config/config_infer_bowling.txt for s3)\n");
         return -1;
     }
 
@@ -183,8 +183,11 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    /* Enable tracker for s2 (640 bowling) and s3 (1280 bowling) */
-    enable_tracker = (stream_id == 2 || stream_id == 3) ? 1 : 0;
+    /* Enable tracker for all streams */
+    enable_tracker = 1;
+
+    /* Enable SGIE (pins detection) for s2 only */
+    int enable_sgie = (stream_id == 2) ? 1 : 0;
 
     /* Determine orientation: default to portrait for s0-s3 */
     int is_portrait = 1;  /* Default to portrait */
@@ -210,7 +213,7 @@ int main(int argc, char *argv[])
         } else if (stream_id == 3) {
             config_file = "/config/config_infer_bowling.txt";
         } else {
-            config_file = "/config/config_infer_yolov8.txt";
+            config_file = "/config/config_infer_yolo12x_1280.txt";
         }
     }
 
@@ -236,9 +239,15 @@ int main(int argc, char *argv[])
              "caps=\"application/x-rtp, media=video, clock-rate=90000, "
              "encoding-name=(string)H264, payload=96\" )", udp_port);
     snprintf(rtsp_url, sizeof(rtsp_url), "rtsp://localhost:%d/ds-test", rtsp_port);
-    snprintf(startup_msg, sizeof(startup_msg), "Starting %s pipeline for s%d (%dx%d) with %s",
-             is_portrait ? "PORTRAIT" : "LANDSCAPE", stream_id, width, height,
-             strrchr(config_file, '/') ? strrchr(config_file, '/') + 1 : config_file);
+    if (enable_sgie) {
+        snprintf(startup_msg, sizeof(startup_msg), "Starting %s pipeline for s%d (%dx%d) with %s + SGIE pins",
+                 is_portrait ? "PORTRAIT" : "LANDSCAPE", stream_id, width, height,
+                 strrchr(config_file, '/') ? strrchr(config_file, '/') + 1 : config_file);
+    } else {
+        snprintf(startup_msg, sizeof(startup_msg), "Starting %s pipeline for s%d (%dx%d) with %s",
+                 is_portrait ? "PORTRAIT" : "LANDSCAPE", stream_id, width, height,
+                 strrchr(config_file, '/') ? strrchr(config_file, '/') + 1 : config_file);
+    }
 
     gst_init(&argc, &argv);
     loop = g_main_loop_new(NULL, FALSE);
@@ -255,6 +264,7 @@ int main(int argc, char *argv[])
     source = gst_element_factory_make("nvurisrcbin", "uri-source");
     streammux = gst_element_factory_make("nvstreammux", "stream-muxer");
     pgie = gst_element_factory_make("nvinfer", "primary-inference");
+    sgie = enable_sgie ? gst_element_factory_make("nvinfer", "secondary-inference") : NULL;
     nvtracker = enable_tracker ? gst_element_factory_make("nvtracker", "tracker") : NULL;
     nvvidconv = gst_element_factory_make("nvvideoconvert", "convertor");
     nvosd = gst_element_factory_make("nvdsosd", "onscreendisplay");
@@ -268,7 +278,8 @@ int main(int argc, char *argv[])
 
     if (!pipeline || !source || !streammux || !pgie || !nvvidconv ||
         !nvosd || !nvvidconv_postosd || !caps || !encoder || !queue ||
-        !h264parser || !rtppay || !sink || (enable_tracker && !nvtracker)) {
+        !h264parser || !rtppay || !sink || (enable_tracker && !nvtracker) ||
+        (enable_sgie && !sgie)) {
         g_printerr("One element could not be created. Exiting.\n");
         return -1;
     }
@@ -294,11 +305,31 @@ int main(int argc, char *argv[])
                  "config-file-path", config_file,
                  NULL);
 
+    if (enable_sgie) {
+        g_object_set(G_OBJECT(sgie),
+                     "config-file-path", "/config/s2_pins_sgie_1280.txt",
+                     NULL);
+    }
+
     if (enable_tracker) {
-        /* s2 uses 640 tracker, s3 uses 1280 tracker */
-        const char *tracker_config = (stream_id == 2) ? "/config/tracker_config_640.txt" : "/config/tracker_config_1280.txt";
-        int tracker_width = (stream_id == 2) ? 640 : 1280;
-        int tracker_height = (stream_id == 2) ? 640 : 1280;
+        /* s0 uses COCO 1280, s1 uses bowling 640, s2 uses bowling 640, s3 uses pins 1280 */
+        const char *tracker_config;
+        int tracker_width;
+        int tracker_height;
+
+        if (stream_id == 0) {
+            tracker_config = "/config/s0_tracker_1280.txt";
+            tracker_width = 1280;
+            tracker_height = 1280;
+        } else if (stream_id == 1 || stream_id == 2) {
+            tracker_config = (stream_id == 1) ? "/config/s1_tracker_640.txt" : "/config/s2_tracker_640.txt";
+            tracker_width = 640;
+            tracker_height = 640;
+        } else {
+            tracker_config = "/config/tracker_config_1280.txt";
+            tracker_width = 1280;
+            tracker_height = 1280;
+        }
 
         g_object_set(G_OBJECT(nvtracker),
                      "ll-lib-file", "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so",
@@ -337,7 +368,11 @@ int main(int argc, char *argv[])
                  NULL);
 
     /* Add elements to pipeline */
-    if (enable_tracker) {
+    if (enable_tracker && enable_sgie) {
+        gst_bin_add_many(GST_BIN(pipeline),
+                         source, streammux, pgie, sgie, nvtracker, nvvidconv, nvosd,
+                         nvvidconv_postosd, caps, encoder, queue, h264parser, rtppay, sink, NULL);
+    } else if (enable_tracker) {
         gst_bin_add_many(GST_BIN(pipeline),
                          source, streammux, pgie, nvtracker, nvvidconv, nvosd,
                          nvvidconv_postosd, caps, encoder, queue, h264parser, rtppay, sink, NULL);
@@ -351,7 +386,14 @@ int main(int argc, char *argv[])
     g_signal_connect(source, "pad-added", G_CALLBACK(on_pad_added), streammux);
 
     /* Link elements */
-    if (enable_tracker) {
+    if (enable_tracker && enable_sgie) {
+        if (!gst_element_link_many(streammux, pgie, sgie, nvtracker, nvvidconv, nvosd,
+                                    nvvidconv_postosd, caps, encoder, queue,
+                                    h264parser, rtppay, sink, NULL)) {
+            g_printerr("Elements could not be linked. Exiting.\n");
+            return -1;
+        }
+    } else if (enable_tracker) {
         if (!gst_element_link_many(streammux, pgie, nvtracker, nvvidconv, nvosd,
                                     nvvidconv_postosd, caps, encoder, queue,
                                     h264parser, rtppay, sink, NULL)) {

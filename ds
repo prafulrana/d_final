@@ -14,19 +14,19 @@ case "$1" in
         docker run -d --name ds-s1 --gpus all --net=host \
           -v /root/d_final/config:/config \
           -v /root/d_final/models:/models \
-          ds-s1:latest /app/live_stream 1 portrait
+          ds-s1:latest /app/live_stream 1 portrait /config/s1_bowling_ball_640.txt
 
         docker run -d --name ds-s2 --gpus all --net=host \
           -v /root/d_final/config:/config \
           -v /root/d_final/models:/models \
-          ds-s1:latest /app/live_stream 2 portrait /config/config_infer_bowling_640.txt
+          ds-s1:latest /app/live_stream 2 portrait /config/s2_bowling_ball_640.txt
 
         docker run -d --name ds-s3 --gpus all --net=host \
           -v /root/d_final/config:/config \
           -v /root/d_final/models:/models \
-          ds-s1:latest /app/live_stream 3 portrait /config/config_infer_bowling.txt
+          ds-s1:latest /app/live_stream 3 portrait /config/s3_bowling_pins_1280.txt
 
-        echo "✓ DeepStream containers started (s0-s1: COCO, s2: bowling 640, s3: bowling 1280)"
+        echo "✓ DeepStream containers started (s0: COCO, s1-s2: bowling 640, s3: pins 1280)"
         ;;
     stop)
         docker stop ds-s0 ds-s1 ds-s2 ds-s3 2>/dev/null
@@ -34,13 +34,56 @@ case "$1" in
         echo "✓ DeepStream containers stopped"
         ;;
     restart)
-        $0 stop && $0 start
+        if [ -n "$2" ]; then
+            # Restart specific stream
+            STREAM="$2"
+            docker stop ds-$STREAM 2>/dev/null
+            docker rm ds-$STREAM 2>/dev/null
+
+            case "$STREAM" in
+                s0)
+                    docker run -d --name ds-s0 --gpus all --net=host \
+                      -v /root/d_final/config:/config \
+                      -v /root/d_final/models:/models \
+                      ds-s1:latest /app/live_stream 0 portrait
+                    echo "✓ Restarted ds-s0"
+                    ;;
+                s1)
+                    docker run -d --name ds-s1 --gpus all --net=host \
+                      -v /root/d_final/config:/config \
+                      -v /root/d_final/models:/models \
+                      ds-s1:latest /app/live_stream 1 portrait /config/s1_bowling_ball_640.txt
+                    echo "✓ Restarted ds-s1"
+                    ;;
+                s2)
+                    docker run -d --name ds-s2 --gpus all --net=host \
+                      -v /root/d_final/config:/config \
+                      -v /root/d_final/models:/models \
+                      ds-s1:latest /app/live_stream 2 portrait /config/s2_bowling_ball_640.txt
+                    echo "✓ Restarted ds-s2"
+                    ;;
+                s3)
+                    docker run -d --name ds-s3 --gpus all --net=host \
+                      -v /root/d_final/config:/config \
+                      -v /root/d_final/models:/models \
+                      ds-s1:latest /app/live_stream 3 portrait /config/s3_bowling_pins_1280.txt
+                    echo "✓ Restarted ds-s3"
+                    ;;
+                *)
+                    echo "Unknown stream: $STREAM (use s0, s1, s2, or s3)"
+                    exit 1
+                    ;;
+            esac
+        else
+            # Restart all
+            $0 stop && $0 start
+        fi
         ;;
     status)
         docker ps --filter "name=ds-s" --format "table {{.Names}}\t{{.Status}}"
         ;;
     *)
-        echo "Usage: $0 {build|start|stop|restart|status}"
+        echo "Usage: $0 {build|start|stop|restart [s0|s1|s2|s3]|status}"
         exit 1
         ;;
 esac

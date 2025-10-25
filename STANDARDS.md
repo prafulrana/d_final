@@ -165,16 +165,20 @@ docker logs ds-s2 --follow | grep "PLAYING"
 # 8. CRITICAL: Copy engines to persistent cache
 ./.scripts/cache_engine.sh copy
 
-# 9. Verify cache with list command
+# 9. Verify cache with verify command
+./.scripts/cache_engine.sh verify
+# Should show ✓ for all configs pointing to existing cached engines
+
+# 10. List engines to confirm cache status
 ./.scripts/cache_engine.sh list
 # Should show engines in both /app/ (containers) and /models/ (host)
 
-# 10. Test cache reuse - restart should be instant (no rebuild)
+# 11. Test cache reuse - restart should be instant (no rebuild)
 ./ds restart
 docker logs ds-s2 2>&1 | grep "deserialized trt engine"
 # Should see: "deserialized trt engine from :/models/new_model_b1_gpu0_fp16.engine"
 
-# 11. Verify no rebuild happened
+# 12. Verify no rebuild happened
 docker logs ds-s2 2>&1 | grep "Building the TensorRT Engine"
 # Should be EMPTY (no output = good, used cache)
 ```
@@ -187,6 +191,9 @@ docker logs ds-s2 2>&1 | grep "Building the TensorRT Engine"
 
 # List engines in containers + /models/
 ./.scripts/cache_engine.sh list
+
+# Verify configs point to existing cached engines
+./.scripts/cache_engine.sh verify
 
 # Delete cached engines (force rebuild)
 ./.scripts/cache_engine.sh clean

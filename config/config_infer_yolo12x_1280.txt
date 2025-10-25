@@ -1,5 +1,5 @@
 ####################################################################################################
-# YOLOv8n COCO Inference Configuration
+# YOLO12x COCO Inference Configuration
 # 80 classes: person, bicycle, car, motorcycle, etc.
 # Uses DeepStream-Yolo custom parser for bbox output
 ####################################################################################################
@@ -8,8 +8,8 @@
 gpu-id=0
 net-scale-factor=0.0039215697906911373
 model-color-format=0
-onnx-file=/models/yolov8n.onnx
-model-engine-file=/models/yolov8n_b1_gpu0_fp16.engine
+onnx-file=/models/yolo12x_1280.onnx
+model-engine-file=/models/yolo12x_1280_b1_gpu0_fp16.engine
 labelfile-path=/models/coco_labels.txt
 batch-size=1
 network-mode=2
@@ -20,6 +20,7 @@ process-mode=1
 network-type=0
 cluster-mode=2
 maintain-aspect-ratio=1
+symmetric-padding=1
 parse-bbox-func-name=NvDsInferParseYolo
 custom-lib-path=/app/libnvdsinfer_custom_impl_Yolo.so
 engine-create-func-name=NvDsInferYoloCudaEngineGet
