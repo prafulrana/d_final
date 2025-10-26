@@ -183,11 +183,11 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    /* Enable tracker for all streams */
-    enable_tracker = 1;
+    /* Enable tracker for s1 and s2 only (s3 disabled for testing) */
+    enable_tracker = (stream_id == 1 || stream_id == 2);
 
-    /* Enable SGIE (pins detection) for s2 only */
-    int enable_sgie = (stream_id == 2) ? 1 : 0;
+    /* Disable SGIE for testing */
+    int enable_sgie = 0;
 
     /* Determine orientation: default to portrait for s0-s3 */
     int is_portrait = 1;  /* Default to portrait */
@@ -307,26 +307,31 @@ int main(int argc, char *argv[])
 
     if (enable_sgie) {
         g_object_set(G_OBJECT(sgie),
-                     "config-file-path", "/config/s2_pins_sgie_1280.txt",
+                     "config-file-path", "/config/s3_bowling_ball_sgie_640.txt",
                      NULL);
     }
 
     if (enable_tracker) {
-        /* s0 uses COCO 1280, s1 uses bowling 640, s2 uses bowling 640, s3 uses pins 1280 */
+        /* s1 uses bowling 640, s3 uses COCO 1280 + ball SGIE */
         const char *tracker_config;
         int tracker_width;
         int tracker_height;
 
-        if (stream_id == 0) {
-            tracker_config = "/config/s0_tracker_1280.txt";
-            tracker_width = 1280;
-            tracker_height = 1280;
-        } else if (stream_id == 1 || stream_id == 2) {
-            tracker_config = (stream_id == 1) ? "/config/s1_tracker_640.txt" : "/config/s2_tracker_640.txt";
+        if (stream_id == 1) {
+            tracker_config = "/config/s1_tracker_640.txt";
             tracker_width = 640;
             tracker_height = 640;
+        } else if (stream_id == 2) {
+            tracker_config = "/config/s2_tracker_640.txt";
+            tracker_width = 640;
+            tracker_height = 640;
+        } else if (stream_id == 3) {
+            tracker_config = "/config/s3_tracker_1280.txt";
+            tracker_width = 1280;
+            tracker_height = 1280;
         } else {
-            tracker_config = "/config/tracker_config_1280.txt";
+            /* Fallback for s0 if tracker ever enabled */
+            tracker_config = "/config/s0_tracker_1280.txt";
             tracker_width = 1280;
             tracker_height = 1280;
         }

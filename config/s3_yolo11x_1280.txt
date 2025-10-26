@@ -1,5 +1,5 @@
 ####################################################################################################
-# YOLO12x COCO Inference Configuration
+# YOLO11x COCO Inference Configuration for s3
 # 80 classes: person, bicycle, car, motorcycle, etc.
 # Uses DeepStream-Yolo custom parser for bbox output
 ####################################################################################################
@@ -8,11 +8,10 @@
 gpu-id=0
 net-scale-factor=0.0039215697906911373
 model-color-format=0
-onnx-file=/models/yolo12x_1280.onnx
-model-engine-file=/models/yolo12x_1280_s0.engine
+onnx-file=/models/yolo11x_1280.onnx
 labelfile-path=/models/coco_labels.txt
 batch-size=1
-network-mode=2
+network-mode=0
 num-detected-classes=80
 interval=0
 gie-unique-id=1
@@ -27,14 +26,5 @@ engine-create-func-name=NvDsInferYoloCudaEngineGet
 
 [class-attrs-all]
 nms-iou-threshold=0.35
-pre-cluster-threshold=0.99
+pre-cluster-threshold=0.25
 topk=300
-
-[class-attrs-39]
-pre-cluster-threshold=0.05
-
-[class-attrs-32]
-pre-cluster-threshold=0.05
-
-[class-attrs-58]
-pre-cluster-threshold=0.15

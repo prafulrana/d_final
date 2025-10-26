@@ -12,14 +12,22 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
-# Copy source file
+# Copy source files
 COPY live_stream.c /app/
+COPY live_stream_multi.c /app/
 
 # Copy YOLO parser library
 COPY libnvdsinfer_custom_impl_Yolo.so /app/
 
-# Compile binary (supports both portrait and landscape via parameter)
+# Compile binaries
 RUN gcc -o /app/live_stream /app/live_stream.c \
+    $(pkg-config --cflags --libs gstreamer-1.0 gstreamer-rtsp-server-1.0) \
+    -I/opt/nvidia/deepstream/deepstream/sources/includes \
+    -L/opt/nvidia/deepstream/deepstream/lib \
+    -lnvdsgst_meta -lnvds_meta \
+    -Wl,-rpath=/opt/nvidia/deepstream/deepstream/lib
+
+RUN gcc -o /app/live_stream_multi /app/live_stream_multi.c \
     $(pkg-config --cflags --libs gstreamer-1.0 gstreamer-rtsp-server-1.0) \
     -I/opt/nvidia/deepstream/deepstream/sources/includes \
     -L/opt/nvidia/deepstream/deepstream/lib \

@@ -2,6 +2,31 @@
 
 This repo runs 4 DeepStream containers (s0, s1, s2, s3) for YOLOv8 inference on live RTSP streams from a MediaMTX relay.
 
+## 🚨 HARDWARE CAPABILITY BASELINE
+
+**This hardware (RTX 5080) has been tested running 168 concurrent DeepStream containers with YOLOWorld on vanilla DeepStream.**
+
+**NEVER** claim anything is "too big", "massive", "heavy", or "resource intensive" for this hardware. If something uses high GPU/CPU, it's a **BUG or MISCONFIGURATION**, not a hardware limit.
+
+**Models tested at scale:**
+- YOLOWorld (largest YOLO variant) - 168 concurrent streams ✓
+- YOLO12x (226MB ONNX) - Proven working at scale
+- YOLOv8n (13MB ONNX) - Lightweight baseline
+
+**Expected performance per stream (FP16 TensorRT + NVDEC decode + batching):**
+- CPU: <10% per container (GPU-bound workload)
+- GPU: 30-50% for YOLO12x @1280 (single stream with FP16)
+- GPU: 45-75% only if FP32/CPU decode (misconfiguration)
+- Any single stream using >90% GPU = BUG (wrong precision mode, CPU decode, no batching, or corrupted engine cache)
+
+**Debug checklist for high GPU usage:**
+1. Check `network-mode=2` (FP16) in config, not FP32
+2. Verify `cudadec-memtype=0` (NVDEC GPU decode)
+3. Confirm TensorRT `.engine` file exists and is valid
+4. Enable batching: `batch-size=4` and `process-mode=1`
+5. Check for NVENC/display overhead (`nvdsosd` + `nveglglessink`)
+6. Delete and rebuild `.engine` files if switching models
+
 ## ⚠️ IMPORTANT: Always Use Managed Scripts
 
 **DO NOT use raw docker/mediamtx/frp commands**. This repo provides managed lifecycle scripts that handle system state correctly.
