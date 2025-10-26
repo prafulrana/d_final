@@ -6,29 +6,35 @@ case "$1" in
         ./build.sh
         ;;
     start)
-        # Start s1 (bowling ball detection)
+        # Start s0 (Dual inference: YOLO12m pins + bowling ball)
+        docker run -d --name ds-s0 --gpus all --net=host \
+          -v /root/d_final/config:/config \
+          -v /root/d_final/models:/models \
+          ds-s1:latest /app/live_stream_dual_infer 0 portrait
+
+        # Start s1 (Dual inference: YOLO12m pins + bowling ball)
         docker run -d --name ds-s1 --gpus all --net=host \
           -v /root/d_final/config:/config \
           -v /root/d_final/models:/models \
-          ds-s1:latest /app/live_stream 1 portrait /config/s1_bowling_ball_640.txt
+          ds-s1:latest /app/live_stream_dual_infer 1 portrait
 
-        # Start s2 (same as s1 for testing)
+        # Start s2 (Dual inference: YOLO12m pins + bowling ball)
         docker run -d --name ds-s2 --gpus all --net=host \
           -v /root/d_final/config:/config \
           -v /root/d_final/models:/models \
-          ds-s1:latest /app/live_stream 2 portrait /config/s2_bowling_ball_640.txt
+          ds-s1:latest /app/live_stream_dual_infer 2 portrait
 
-        # Start s3 (YOLO11x COCO FP32)
+        # Start s3 (Dual inference: YOLO12m pins + bowling ball)
         docker run -d --name ds-s3 --gpus all --net=host \
           -v /root/d_final/config:/config \
           -v /root/d_final/models:/models \
-          ds-s1:latest /app/live_stream 3 portrait /config/s3_yolo11x_1280.txt
+          ds-s1:latest /app/live_stream_dual_infer 3 portrait
 
-        echo "✓ DeepStream containers started (s1: ball only, s2: COCO only, s3: COCO+ball SGIE+tracker)"
+        echo "✓ DeepStream containers started (All: YOLO12m pins + bowling ball detection)"
         ;;
     stop)
-        docker stop ds-s1 ds-s2 ds-s3 2>/dev/null
-        docker rm ds-s1 ds-s2 ds-s3 2>/dev/null
+        docker stop ds-s0 ds-s1 ds-s2 ds-s3 2>/dev/null
+        docker rm ds-s0 ds-s1 ds-s2 ds-s3 2>/dev/null
         echo "✓ DeepStream containers stopped"
         ;;
     restart)

@@ -15,6 +15,7 @@ WORKDIR /app
 # Copy source files
 COPY live_stream.c /app/
 COPY live_stream_multi.c /app/
+COPY live_stream_dual_infer.c /app/
 
 # Copy YOLO parser library
 COPY libnvdsinfer_custom_impl_Yolo.so /app/
@@ -28,6 +29,13 @@ RUN gcc -o /app/live_stream /app/live_stream.c \
     -Wl,-rpath=/opt/nvidia/deepstream/deepstream/lib
 
 RUN gcc -o /app/live_stream_multi /app/live_stream_multi.c \
+    $(pkg-config --cflags --libs gstreamer-1.0 gstreamer-rtsp-server-1.0) \
+    -I/opt/nvidia/deepstream/deepstream/sources/includes \
+    -L/opt/nvidia/deepstream/deepstream/lib \
+    -lnvdsgst_meta -lnvds_meta \
+    -Wl,-rpath=/opt/nvidia/deepstream/deepstream/lib
+
+RUN gcc -o /app/live_stream_dual_infer /app/live_stream_dual_infer.c \
     $(pkg-config --cflags --libs gstreamer-1.0 gstreamer-rtsp-server-1.0) \
     -I/opt/nvidia/deepstream/deepstream/sources/includes \
     -L/opt/nvidia/deepstream/deepstream/lib \
