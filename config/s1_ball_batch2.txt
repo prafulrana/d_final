@@ -1,0 +1,31 @@
+####################################################################################################
+# s1 PGIE - Bowling Ball Detection (Full Frame)
+# YOLOv8n Bowling Ball Detection (640x640) on bowling-ball-v3 dataset
+# Runs as PGIE (full frame inference) with UID 2
+####################################################################################################
+
+[property]
+gpu-id=0
+net-scale-factor=0.0039215697906911373
+model-color-format=0
+onnx-file=/models/bowling_640_blur.onnx
+model-engine-file=/models/bowling_640_batch2.engine
+labelfile-path=/models/bowling_labels.txt
+batch-size=2
+network-mode=2
+num-detected-classes=1
+interval=0
+gie-unique-id=2
+process-mode=1
+network-type=0
+cluster-mode=2
+maintain-aspect-ratio=1
+symmetric-padding=1
+parse-bbox-func-name=NvDsInferParseYolo
+custom-lib-path=/app/libnvdsinfer_custom_impl_Yolo.so
+engine-create-func-name=NvDsInferYoloCudaEngineGet
+
+[class-attrs-all]
+nms-iou-threshold=0.15
+pre-cluster-threshold=0.15
+topk=300

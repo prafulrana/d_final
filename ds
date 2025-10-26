@@ -44,8 +44,38 @@ case "$1" in
     status)
         docker ps --filter "name=ds-" --format "table {{.Names}}\t{{.Status}}"
         ;;
+    test)
+        # Test batched dual inference: s0+s2 as control, s1+s3 batched
+        echo "Starting control streams (s0, s2) with separate dual_infer..."
+        docker run -d --name ds-s0 --gpus all --net=host \
+          -v /root/d_final/config:/config \
+          -v /root/d_final/models:/models \
+          ds-s1:latest /app/live_stream_dual_infer 0 portrait
+
+        docker run -d --name ds-s2 --gpus all --net=host \
+          -v /root/d_final/config:/config \
+          -v /root/d_final/models:/models \
+          ds-s1:latest /app/live_stream_dual_infer 2 portrait
+
+        echo "Starting batched streams (s1, s3) with live_stream_multi..."
+        docker run -d --name ds-multi --gpus all --net=host \
+          -v /root/d_final/config:/config \
+          -v /root/d_final/models:/models \
+          ds-s1:latest /app/live_stream_multi
+
+        echo "✓ Test setup: s0+s2 (control) + s1+s3 (batched)"
+        echo "  s0: rtsp://localhost:8554/ds-test"
+        echo "  s1: rtsp://localhost:8555/ds-test (batched)"
+        echo "  s2: rtsp://localhost:8556/ds-test"
+        echo "  s3: rtsp://localhost:8557/ds-test (batched)"
+        ;;
+    stop-test)
+        docker stop ds-s0 ds-s2 ds-multi 2>/dev/null
+        docker rm ds-s0 ds-s2 ds-multi 2>/dev/null
+        echo "✓ Test containers stopped"
+        ;;
     *)
-        echo "Usage: $0 {build|start|stop|restart|status}"
+        echo "Usage: $0 {build|start|stop|restart|status|test|stop-test}"
         exit 1
         ;;
 esac
