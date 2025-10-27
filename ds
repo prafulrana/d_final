@@ -10,25 +10,25 @@ case "$1" in
         docker run -d --name ds-s0 --gpus all --net=host \
           -v /root/d_final/config:/config \
           -v /root/d_final/models:/models \
-          ds-s1:latest /app/live_stream_dual_infer 0 portrait
+          ds-s1:latest /app/live_stream_dual_infer 0 portrait /config/s0_pins.txt
 
         # Start s1 (Dual inference: YOLO12m pins + bowling ball)
         docker run -d --name ds-s1 --gpus all --net=host \
           -v /root/d_final/config:/config \
           -v /root/d_final/models:/models \
-          ds-s1:latest /app/live_stream_dual_infer 1 portrait
+          ds-s1:latest /app/live_stream_dual_infer 1 portrait /config/s1_pins.txt
 
         # Start s2 (Dual inference: YOLO12m pins + bowling ball)
         docker run -d --name ds-s2 --gpus all --net=host \
           -v /root/d_final/config:/config \
           -v /root/d_final/models:/models \
-          ds-s1:latest /app/live_stream_dual_infer 2 portrait
+          ds-s1:latest /app/live_stream_dual_infer 2 portrait /config/s2_pins.txt
 
         # Start s3 (Dual inference: YOLO12m pins + bowling ball)
         docker run -d --name ds-s3 --gpus all --net=host \
           -v /root/d_final/config:/config \
           -v /root/d_final/models:/models \
-          ds-s1:latest /app/live_stream_dual_infer 3 portrait
+          ds-s1:latest /app/live_stream_dual_infer 3 portrait /config/s3_pins.txt
 
         echo "✓ DeepStream containers started (All: YOLO12m pins + bowling ball detection)"
         ;;
@@ -50,12 +50,12 @@ case "$1" in
         docker run -d --name ds-s0 --gpus all --net=host \
           -v /root/d_final/config:/config \
           -v /root/d_final/models:/models \
-          ds-s1:latest /app/live_stream_dual_infer 0 portrait
+          ds-s1:latest /app/live_stream_dual_infer 0 portrait /config/s0_pins.txt
 
         docker run -d --name ds-s2 --gpus all --net=host \
           -v /root/d_final/config:/config \
           -v /root/d_final/models:/models \
-          ds-s1:latest /app/live_stream_dual_infer 2 portrait
+          ds-s1:latest /app/live_stream_dual_infer 2 portrait /config/s2_pins.txt
 
         echo "Starting batched streams (s1, s3) with live_stream_multi..."
         docker run -d --name ds-multi --gpus all --net=host \

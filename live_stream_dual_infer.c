@@ -160,9 +160,8 @@ on_pad_added(GstElement *element, GstPad *pad, gpointer data)
 
 int main(int argc, char *argv[])
 {
-    GstElement *pipeline, *source, *streammux, *tee;
-    GstElement *queue_pre_pgie1, *queue_pre_pgie2, *queue_post_pgie1, *queue_post_pgie2;
-    GstElement *pgie1, *pgie2, *metamux;
+    GstElement *pipeline, *source, *streammux;
+    GstElement *pgie1, *pgie2;
     GstElement *nvtracker, *nvvidconv, *nvosd;
     GstElement *nvvidconv_postosd, *caps, *encoder, *queue, *h264parser, *rtppay, *sink;
     GstBus *bus;
@@ -171,8 +170,6 @@ int main(int argc, char *argv[])
     GstRTSPServer *server;
     GstRTSPMountPoints *mounts;
     GstRTSPMediaFactory *factory;
-    GstPad *tee_src0, *tee_src1, *queue_sink0, *queue_sink1;
-    GstPad *queue_src0, *queue_src1, *metamux_sink0, *metamux_sink1;
 
     if (argc < 2 || argc > 4) {
         g_printerr("Usage: %s <stream_id> [orientation] [config_file]\n", argv[0]);
@@ -230,14 +227,8 @@ int main(int argc, char *argv[])
     /* Create all elements */
     source = gst_element_factory_make("nvurisrcbin", "uri-source");
     streammux = gst_element_factory_make("nvstreammux", "stream-muxer");
-    tee = gst_element_factory_make("tee", "tee");
-    queue_pre_pgie1 = gst_element_factory_make("queue", "queue-pre-pgie1");
-    queue_pre_pgie2 = gst_element_factory_make("queue", "queue-pre-pgie2");
     pgie1 = gst_element_factory_make("nvinfer", "primary-inference-1");
     pgie2 = gst_element_factory_make("nvinfer", "primary-inference-2");
-    queue_post_pgie1 = gst_element_factory_make("queue", "queue-post-pgie1");
-    queue_post_pgie2 = gst_element_factory_make("queue", "queue-post-pgie2");
-    metamux = gst_element_factory_make("nvdsmetamux", "meta-mux");
     nvtracker = gst_element_factory_make("nvtracker", "tracker");
     nvvidconv = gst_element_factory_make("nvvideoconvert", "convertor");
     nvosd = gst_element_factory_make("nvdsosd", "onscreendisplay");
@@ -249,9 +240,8 @@ int main(int argc, char *argv[])
     rtppay = gst_element_factory_make("rtph264pay", "rtppay");
     sink = gst_element_factory_make("udpsink", "udpsink");
 
-    if (!pipeline || !source || !streammux || !tee ||
-        !queue_pre_pgie1 || !queue_pre_pgie2 || !queue_post_pgie1 || !queue_post_pgie2 ||
-        !pgie1 || !pgie2 || !metamux || !nvtracker || !nvvidconv ||
+    if (!pipeline || !source || !streammux ||
+        !pgie1 || !pgie2 || !nvtracker || !nvvidconv ||
         !nvosd || !nvvidconv_postosd || !caps || !encoder || !queue ||
         !h264parser || !rtppay || !sink) {
         g_printerr("One element could not be created. Exiting.\n");
@@ -320,99 +310,22 @@ int main(int argc, char *argv[])
 
     /* Add all elements to pipeline */
     gst_bin_add_many(GST_BIN(pipeline),
-                     source, streammux, tee,
-                     queue_pre_pgie1, pgie1, queue_post_pgie1,
-                     queue_pre_pgie2, pgie2, queue_post_pgie2,
-                     metamux, nvtracker, nvvidconv, nvosd,
+                     source, streammux, pgie1, pgie2, nvtracker, nvvidconv, nvosd,
                      nvvidconv_postosd, caps, encoder, queue,
                      h264parser, rtppay, sink, NULL);
 
     /* Connect dynamic pad from nvurisrcbin to streammux */
     g_signal_connect(source, "pad-added", G_CALLBACK(on_pad_added), streammux);
 
-    /* Link main branch: source -> streammux -> tee */
-    if (!gst_element_link_many(streammux, tee, NULL)) {
-        g_printerr("Failed to link streammux -> tee\n");
-        return -1;
-    }
-
-    /* Link inference branch 1: queue -> pgie1 -> queue */
-    if (!gst_element_link_many(queue_pre_pgie1, pgie1, queue_post_pgie1, NULL)) {
-        g_printerr("Failed to link PGIE1 branch\n");
-        return -1;
-    }
-
-    /* Link inference branch 2: queue -> pgie2 -> queue */
-    if (!gst_element_link_many(queue_pre_pgie2, pgie2, queue_post_pgie2, NULL)) {
-        g_printerr("Failed to link PGIE2 branch\n");
-        return -1;
-    }
-
-    /* Link post-metamux: metamux -> tracker -> nvvidconv -> nvosd -> encoder -> sink */
-    if (!gst_element_link_many(metamux, nvtracker, nvvidconv, nvosd,
+    /* Link sequential pipeline: streammux -> pgie1 -> pgie2 -> tracker -> nvvidconv -> nvosd -> encoder -> sink */
+    if (!gst_element_link_many(streammux, pgie1, pgie2, nvtracker, nvvidconv, nvosd,
                                 nvvidconv_postosd, caps, encoder, queue,
                                 h264parser, rtppay, sink, NULL)) {
-        g_printerr("Failed to link post-metamux pipeline\n");
+        g_printerr("Failed to link sequential dual inference pipeline\n");
         return -1;
     }
 
-    /* Get tee src pads */
-    tee_src0 = gst_element_request_pad_simple(tee, "src_0");
-    tee_src1 = gst_element_request_pad_simple(tee, "src_1");
-    if (!tee_src0 || !tee_src1) {
-        g_printerr("Failed to get tee src pads\n");
-        return -1;
-    }
-
-    /* Get queue sink pads */
-    queue_sink0 = gst_element_get_static_pad(queue_pre_pgie1, "sink");
-    queue_sink1 = gst_element_get_static_pad(queue_pre_pgie2, "sink");
-    if (!queue_sink0 || !queue_sink1) {
-        g_printerr("Failed to get queue sink pads\n");
-        return -1;
-    }
-
-    /* Link tee to queues */
-    if (gst_pad_link(tee_src0, queue_sink0) != GST_PAD_LINK_OK) {
-        g_printerr("Failed to link tee src_0 to queue_pre_pgie1\n");
-        return -1;
-    }
-    if (gst_pad_link(tee_src1, queue_sink1) != GST_PAD_LINK_OK) {
-        g_printerr("Failed to link tee src_1 to queue_pre_pgie2\n");
-        return -1;
-    }
-
-    gst_object_unref(queue_sink0);
-    gst_object_unref(queue_sink1);
-
-    /* Get queue src pads after PGIE */
-    queue_src0 = gst_element_get_static_pad(queue_post_pgie1, "src");
-    queue_src1 = gst_element_get_static_pad(queue_post_pgie2, "src");
-    if (!queue_src0 || !queue_src1) {
-        g_printerr("Failed to get queue src pads\n");
-        return -1;
-    }
-
-    /* Get metamux sink pads */
-    metamux_sink0 = gst_element_request_pad_simple(metamux, "sink_0");
-    metamux_sink1 = gst_element_request_pad_simple(metamux, "sink_1");
-    if (!metamux_sink0 || !metamux_sink1) {
-        g_printerr("Failed to get metamux sink pads\n");
-        return -1;
-    }
-
-    /* Link queues to metamux */
-    if (gst_pad_link(queue_src0, metamux_sink0) != GST_PAD_LINK_OK) {
-        g_printerr("Failed to link queue_post_pgie1 to metamux sink_0\n");
-        return -1;
-    }
-    if (gst_pad_link(queue_src1, metamux_sink1) != GST_PAD_LINK_OK) {
-        g_printerr("Failed to link queue_post_pgie2 to metamux sink_1\n");
-        return -1;
-    }
-
-    gst_object_unref(queue_src0);
-    gst_object_unref(queue_src1);
+    g_print("Link succeeded\n");
 
     /* Create RTSP server */
     server = gst_rtsp_server_new();
