@@ -34,16 +34,15 @@ case "$1" in
         ;;
     stop)
         # Stop all DeepStream containers
-        for i in $(seq 0 35); do
-            docker stop ds-s$i 2>/dev/null
-            docker rm ds-s$i 2>/dev/null
-        done
+        docker ps -a --filter "name=ds-s" --format "{{.Names}}" | xargs -r docker stop 2>/dev/null
+        docker ps -a --filter "name=ds-s" --format "{{.Names}}" | xargs -r docker rm 2>/dev/null
         docker stop ds-multi 2>/dev/null
         docker rm ds-multi 2>/dev/null
         echo "✓ DeepStream simple containers stopped"
         ;;
     restart)
-        $0 stop && $0 start
+        NUM_STREAMS="${2:-4}"
+        $0 stop && $0 start "$NUM_STREAMS"
         ;;
     status)
         docker ps --filter "name=ds-s0" --filter "name=ds-s1" --filter "name=ds-s2" --filter "name=ds-s3" --format "table {{.Names}}\t{{.Status}}"
