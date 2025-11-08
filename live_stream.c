@@ -298,7 +298,7 @@ int main(int argc, char *argv[])
                  "height", height,
                  "batch-size", 1,
                  "batched-push-timeout", 33333,
-                 "live-source", 0,
+                 "live-source", 1,
                  NULL);
 
     g_object_set(G_OBJECT(pgie),
