@@ -1,0 +1,59 @@
+#!/bin/bash
+# Simple single-model DeepStream container (no dual inference)
+
+case "$1" in
+    build)
+        ./build.sh
+        ;;
+    start)
+        NUM_STREAMS="${2:-4}"  # Default to 4 if not specified
+
+        # Stop all DeepStream containers first
+        docker ps -a --filter "name=ds-s" --format "{{.Names}}" | xargs -r docker stop 2>/dev/null
+        docker ps -a --filter "name=ds-s" --format "{{.Names}}" | xargs -r docker rm 2>/dev/null
+        docker stop ds-multi 2>/dev/null
+        docker rm ds-multi 2>/dev/null
+
+        # Start N streams (Single inference: YOLO12n custom bowling model)
+        for i in $(seq 0 $((NUM_STREAMS-1))); do
+            # Use modulo to cycle through available configs (s0-s3)
+            CONFIG_ID=$((i % 4))
+            docker run -d --name ds-s$i --gpus all --net=host \
+              -v /root/d_final/config:/config \
+              -v /root/d_final/models:/models \
+              ds-s1:latest /app/live_stream $i portrait /config/s${CONFIG_ID}_bowling.txt
+
+            if [ $((i % 4)) -eq 3 ] || [ $i -eq $((NUM_STREAMS-1)) ]; then
+                echo "  ✓ Started ds-s0 through ds-s${i}"
+            fi
+        done
+
+        echo ""
+        echo "✓ DeepStream simple containers started: ${NUM_STREAMS} streams"
+        echo "  Output ports: rtsp://localhost:8554-$((8554+NUM_STREAMS-1))/ds-test"
+        ;;
+    stop)
+        # Stop all DeepStream containers
+        for i in $(seq 0 35); do
+            docker stop ds-s$i 2>/dev/null
+            docker rm ds-s$i 2>/dev/null
+        done
+        docker stop ds-multi 2>/dev/null
+        docker rm ds-multi 2>/dev/null
+        echo "✓ DeepStream simple containers stopped"
+        ;;
+    restart)
+        $0 stop && $0 start
+        ;;
+    status)
+        docker ps --filter "name=ds-s0" --filter "name=ds-s1" --filter "name=ds-s2" --filter "name=ds-s3" --format "table {{.Names}}\t{{.Status}}"
+        ;;
+    logs)
+        STREAM="${2:-3}"
+        docker logs ds-s$STREAM "${@:3}"
+        ;;
+    *)
+        echo "Usage: $0 {build|start|stop|restart|status|logs}"
+        exit 1
+        ;;
+esac

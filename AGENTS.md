@@ -452,3 +452,190 @@ vim config/config_infer_bowling.txt
   - Script: `training/scripts/export_deepstream.sh`
   - Uses DeepStream-Yolo's export_yoloV8.py with DeepStreamOutput layer
   - Ensures compatibility with custom parser (libnvdsinfer_custom_impl_Yolo.so)
+
+## EdgeTAM Segmentation Model
+
+### Overview
+
+EdgeTAM is an on-device variant of SAM 2 (Segment Anything Model 2) optimized for real-time video segmentation and tracking.
+
+**Key Features**:
+- **Speed**: 22x faster than SAM 2, achieves 16 FPS on iPhone 15 Pro Max
+- **Size**: 13.9M parameters (compact for edge deployment)
+- **Capabilities**: Image and video object segmentation, multi-object tracking
+- **Inputs**: Points, bounding boxes, previous masks
+- **Outputs**: Binary segmentation masks, IoU predictions
+
+### Architecture for DeepStream
+
+EdgeTAM uses a **two-stage architecture** for ONNX export:
+
+**Stage 1: Image Encoder**
+- Input: RGB image (1×3×1024×1024)
+- Outputs:
+  - `image_embeddings`: 1×256×64×64
+  - `high_res_features_0`: 1×32×256×256
+  - `high_res_features_1`: 1×64×128×128
+- Role: Extract visual features once per frame
+
+**Stage 2: Mask Decoder**
+- Inputs:
+  - `image_embeddings` from encoder
+  - `input_points`: Point prompts (Nx2, coordinates)
+  - `input_labels`: Point labels (N, 1=foreground, 0=background)
+  - `original_sizes`: Image dimensions for coordinate scaling
+- Outputs:
+  - `masks`: Binary segmentation masks (H×W)
+  - `iou_predictions`: Quality scores for each mask
+  - `low_res_masks`: Low-res logits for mask refinement
+- Role: Generate masks for prompted objects
+
+### DeepStream Integration Strategy
+
+**Pipeline Architecture**:
+```
+nvurisrcbin → nvstreammux →
+  nvinfer (encoder) →
+  nvinfer (decoder) →
+  nvdsosd (draw masks) →
+  encoder → rtspout
+```
+
+**Key Challenges**:
+1. **Two-stage inference**: Encoder outputs must be passed to decoder as inputs
+   - Solution: Use `output-tensor-meta=1` in encoder config, custom plugin to bridge
+2. **Prompt generation**: Decoder requires point prompts for mask generation
+   - Solution: Use automatic mask generation mode (grid of points) or YOLO detections as prompts
+3. **Mask visualization**: DeepStream `nvdsosd` doesn't natively support instance segmentation
+   - Solution: Custom CUDA kernel or use `nvdspostprocess` for mask overlay
+
+### Export Script
+
+Location: `training/scripts/export_edgetam.py`
+
+```bash
+# Export EdgeTAM encoder and decoder to ONNX
+python3 training/scripts/export_edgetam.py \
+  --model_id yonigozlan/EdgeTAM-hf \
+  --output_dir /root/d_final/models \
+  --image_size 1024
+```
+
+Generates:
+- `models/edgetam_encoder.onnx` - Image encoder
+- `models/edgetam_decoder.onnx` - Mask decoder
+
+### TensorRT Conversion
+
+```bash
+# Convert encoder
+trtexec --onnx=/root/d_final/models/edgetam_encoder.onnx \
+  --saveEngine=/root/d_final/models/edgetam_encoder.engine \
+  --fp16 --batch=1
+
+# Convert decoder
+trtexec --onnx=/root/d_final/models/edgetam_decoder.onnx \
+  --saveEngine=/root/d_final/models/edgetam_decoder.engine \
+  --fp16 --batch=1
+```
+
+### Configuration Files
+
+**Encoder Config** (`config/s3_edgetam_encoder.txt`):
+```ini
+[property]
+gpu-id=0
+onnx-file=/models/edgetam_encoder.onnx
+model-engine-file=/models/edgetam_encoder.engine
+network-type=100          # Custom output (raw tensors)
+output-tensor-meta=1      # Attach tensor metadata
+batch-size=1
+network-mode=2            # FP16
+```
+
+**Decoder Config** (`config/s3_edgetam_decoder.txt`):
+```ini
+[property]
+gpu-id=0
+onnx-file=/models/edgetam_decoder.onnx
+model-engine-file=/models/edgetam_decoder.engine
+network-type=100          # Custom segmentation
+output-tensor-meta=1
+batch-size=1
+network-mode=2            # FP16
+parse-bbox-instance-mask-func-name=NvDsInferParseCustomEdgeTAM
+custom-lib-path=/app/libnvdsinfer_custom_impl_EdgeTAM.so
+```
+
+### Custom Parser Implementation
+
+Location: `nvdsinfer_custom_impl_EdgeTAM/` (to be created)
+
+Must implement:
+- `NvDsInferParseCustomEdgeTAM()`: Parse mask decoder outputs
+- Extract masks, IoU scores from output tensors
+- Attach `NvDsInferSegmentationMeta` to frame metadata
+- Convert masks to displayable format for `nvdsosd`
+
+### C Application
+
+**Binary**: `live_stream_edgetam`
+**Config**: Takes stream ID (0-3) and runs EdgeTAM segmentation
+
+```bash
+# Run EdgeTAM on stream 3
+docker run -d --name ds-s3 --gpus all --net=host \
+  -v /root/d_final/config:/config \
+  -v /root/d_final/models:/models \
+  ds-s1:latest /app/live_stream_edgetam 3 portrait
+```
+
+### Workflow: Adding EdgeTAM to Stream
+
+```bash
+# 1. Export EdgeTAM to ONNX
+python3 training/scripts/export_edgetam.py --output_dir models/
+
+# 2. Convert to TensorRT (or let DeepStream auto-build)
+# DeepStream will auto-build on first run if ONNX exists
+
+# 3. Create custom parser library
+cd nvdsinfer_custom_impl_EdgeTAM/
+make
+# Builds libnvdsinfer_custom_impl_EdgeTAM.so
+
+# 4. Update build.sh to include EdgeTAM parser
+vim build.sh
+# Add EdgeTAM parser compilation step
+
+# 5. Build and deploy
+./build.sh
+./ds_simple start  # Runs EdgeTAM on ds-s3
+
+# 6. Verify segmentation output
+# View at http://34.47.221.242:8889/s3/
+```
+
+### Performance Expectations
+
+- **FPS**: 10-20 FPS on RTX 5080 (two-stage inference overhead)
+- **GPU Memory**: ~1-2 GiB (encoder + decoder + frame buffers)
+- **Latency**: 50-100ms per frame (depends on number of prompts)
+
+**Note**: EdgeTAM is optimized for mobile devices (INT8 quantization on ARM). On desktop GPU with FP16, expect similar or better performance than mobile baseline (16 FPS).
+
+### Current Status
+
+- [x] Export script created (`training/scripts/export_edgetam.py`)
+- [ ] ONNX models exported
+- [ ] TensorRT engines built
+- [ ] Custom parser implemented
+- [ ] Config files created
+- [ ] `live_stream_edgetam.c` implemented
+- [ ] Tested on ds-s3
+
+### References
+
+- **Model**: https://huggingface.co/yonigozlan/EdgeTAM-hf
+- **Paper**: EdgeTAM: On-Device Track Anything Model (CVPR 2025)
+- **License**: Apache 2.0

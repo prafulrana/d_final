@@ -1,0 +1,36 @@
+%YAML:1.0
+####################################################################################################
+# Optimized IOU Tracker for Batched Bowling (s0+s1)
+# IOU-only tracking (no visual features) - faster, less flicker
+# Based on NVIDIA DeepStream IOU config with extended shadow tracking
+####################################################################################################
+
+BaseConfig:
+  minDetectorConfidence: 0.15    # Very low for fast bowling balls
+
+TargetManagement:
+  preserveStreamUpdateOrder: 1    # Deterministic IDs across streams
+  maxTargetsPerStream: 50    # Max targets per stream
+
+  # [Creation & Termination Policy]
+  minIouDiff4NewTarget: 0.5    # Low for fast-moving balls
+  probationAge: 1    # Fast confirmation for fast balls
+  maxShadowTrackingAge: 70    # Long shadow tracking for ball gaps/occlusions
+  earlyTerminationAge: 1    # Quick termination of unconfirmed
+
+TrajectoryManagement:
+  useUniqueID: 0    # Standard IDs
+
+DataAssociator:
+  dataAssociatorType: 0    # DEFAULT
+  associationMatcherType: 0    # GREEDY (faster than CASCADED)
+  checkClassMatch: 0    # Allow cross-class
+
+  # [Association Metric: Thresholds]
+  minMatchingScore4Overall: 0.0    # IOU-only
+  minMatchingScore4SizeSimilarity: 0.0    # IOU-only
+  minMatchingScore4Iou: 0.15    # Very low IOU for fast bowling ball motion
+
+  # [Association Metric: Weights]
+  matchingScoreWeight4SizeSimilarity: 0.2    # Lower weight
+  matchingScoreWeight4Iou: 0.8    # Higher IOU weight

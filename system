@@ -10,9 +10,15 @@ frpc_start() {
         return 0
     fi
     nohup frpc -c "$FRPC_CONFIG" > "$FRPC_LOG" 2>&1 &
-    sleep 2
-    if pgrep -x frpc > /dev/null && grep -q "login to server success" "$FRPC_LOG" 2>/dev/null; then
-        echo "✓ frpc started"
+    sleep 3
+    if pgrep -x frpc > /dev/null; then
+        if grep -q "login to server success" "$FRPC_LOG" 2>/dev/null; then
+            echo "✓ frpc started and connected"
+            return 0
+        else
+            echo "✓ frpc started (waiting for connection...)"
+            return 0
+        fi
     else
         echo "✗ frpc failed to start"
         return 1
@@ -29,16 +35,18 @@ frpc_stop() {
 
 case "$1" in
     start)
-        frpc_start && ./ds start
+        NUM_STREAMS="${2:-4}"
+        frpc_start && ./ds_simple start "$NUM_STREAMS"
         ;;
     stop)
-        ./ds stop && frpc_stop
+        ./ds_simple stop && frpc_stop
         ;;
     restart)
-        ./ds stop
+        NUM_STREAMS="${2:-4}"
+        ./ds_simple stop
         frpc_stop
         sleep 1
-        frpc_start && ./ds start
+        frpc_start && ./ds_simple start "$NUM_STREAMS"
         ;;
     status)
         ./.scripts/check.sh

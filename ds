@@ -6,6 +6,10 @@ case "$1" in
         ./build.sh
         ;;
     start)
+        # Stop all DeepStream containers first
+        docker stop ds-s0 ds-s1 ds-s2 ds-s3 ds-multi 2>/dev/null
+        docker rm ds-s0 ds-s1 ds-s2 ds-s3 ds-multi 2>/dev/null
+
         # Start s0 (Dual inference: YOLO12m pins + bowling ball)
         docker run -d --name ds-s0 --gpus all --net=host \
           -v /root/d_final/config:/config \
@@ -24,18 +28,12 @@ case "$1" in
           -v /root/d_final/models:/models \
           ds-s1:latest /app/live_stream_dual_infer 2 portrait /config/s2_pins.txt
 
-        # Start s3 (Dual inference: YOLO12m pins + bowling ball)
-        docker run -d --name ds-s3 --gpus all --net=host \
-          -v /root/d_final/config:/config \
-          -v /root/d_final/models:/models \
-          ds-s1:latest /app/live_stream_dual_infer 3 portrait /config/s3_pins.txt
-
-        echo "✓ DeepStream containers started (All: YOLO12m pins + bowling ball detection)"
+        echo "✓ DeepStream containers started: s0, s1, s2 (3 streams)"
         ;;
     stop)
-        docker stop ds-s0 ds-s1 ds-s2 ds-s3 2>/dev/null
-        docker rm ds-s0 ds-s1 ds-s2 ds-s3 2>/dev/null
-        echo "✓ DeepStream containers stopped"
+        docker stop ds-s0 ds-s1 ds-s2 ds-s3 ds-multi 2>/dev/null
+        docker rm ds-s0 ds-s1 ds-s2 ds-s3 ds-multi 2>/dev/null
+        echo "✓ All DeepStream containers stopped"
         ;;
     restart)
         # Restart all

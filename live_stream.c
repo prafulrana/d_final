@@ -178,16 +178,16 @@ int main(int argc, char *argv[])
     }
 
     int stream_id = atoi(argv[1]);
-    if (stream_id < 0 || stream_id > 3) {
-        g_printerr("Invalid stream_id: %d. Must be 0-3.\n", stream_id);
+    if (stream_id < 0 || stream_id > 35) {
+        g_printerr("Invalid stream_id: %d. Must be 0-35.\n", stream_id);
         return -1;
     }
 
     /* Enable tracker for all streams */
     enable_tracker = 1;
 
-    /* Enable SGIE for s2 only (bowling ball detection) */
-    int enable_sgie = (stream_id == 2);
+    /* Disable SGIE for simple single inference */
+    int enable_sgie = 0;
 
     /* Determine orientation: default to portrait for s0-s3 */
     int is_portrait = 1;  /* Default to portrait */
