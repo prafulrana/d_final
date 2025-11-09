@@ -70,7 +70,7 @@ def create_source_bin(source_id, uri):
 
 def create_output_bin(source_id):
     """Create output chain: demux src_N → queue → nvvidconv → nvosd → encoder → rtppay → udpsink"""
-    global pipeline, demux
+    global pipeline, demux, g_rtsp_servers
 
     # Request demux src pad
     pad_name = f"src_{source_id}"
@@ -140,21 +140,25 @@ def create_output_bin(source_id):
         print(f"✗ Failed to link rtppay to udpsink for stream {source_id}")
         return None
 
-    # Create RTSP server
-    rtsp_port = 8554 + source_id
-    server = GstRtspServer.RTSPServer.new()
-    server.props.service = str(rtsp_port)
+    # Reuse existing RTSP server if it exists, otherwise create new one
+    if g_rtsp_servers[source_id]:
+        server = g_rtsp_servers[source_id]
+        print(f"✓ Reusing existing RTSP server at rtsp://localhost:{8554 + source_id}/ds-test")
+    else:
+        rtsp_port = 8554 + source_id
+        server = GstRtspServer.RTSPServer.new()
+        server.props.service = str(rtsp_port)
 
-    factory = GstRtspServer.RTSPMediaFactory.new()
-    launch_str = f"( udpsrc name=pay0 port={5000 + source_id} buffer-size=524288 caps=\"application/x-rtp, media=video, clock-rate=90000, encoding-name=H264, payload=96\" )"
-    factory.set_launch(launch_str)
-    factory.set_shared(True)
+        factory = GstRtspServer.RTSPMediaFactory.new()
+        launch_str = f"( udpsrc name=pay0 port={5000 + source_id} buffer-size=524288 caps=\"application/x-rtp, media=video, clock-rate=90000, encoding-name=H264, payload=96\" )"
+        factory.set_launch(launch_str)
+        factory.set_shared(True)
 
-    mounts = server.get_mount_points()
-    mounts.add_factory("/ds-test", factory)
-    server.attach(None)
+        mounts = server.get_mount_points()
+        mounts.add_factory("/ds-test", factory)
+        server.attach(None)
 
-    print(f"✓ RTSP server ready at rtsp://localhost:{rtsp_port}/ds-test")
+        print(f"✓ RTSP server ready at rtsp://localhost:{rtsp_port}/ds-test")
 
     return {"elements": elements, "demux_src": demux_src, "server": server}
 
@@ -234,6 +238,10 @@ def remove_source(source_id):
         demux_src = g_output_bins[source_id]["demux_src"]
         demux.release_request_pad(demux_src)
         g_output_bins[source_id] = None
+
+    # Note: We don't cleanup the RTSP server - it can stay running
+    # The udpsrc in the RTSP factory will just not receive data until
+    # the stream is added back and the output pipeline is recreated
 
     g_source_enabled[source_id] = False
     g_num_sources -= 1
