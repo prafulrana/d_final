@@ -53,7 +53,6 @@ g_source_enabled = [False] * MAX_NUM_SOURCES
 g_source_bin_list = [None] * MAX_NUM_SOURCES
 g_source_uris = {}  # Store original URIs for each source
 g_output_bins = [None] * MAX_NUM_SOURCES
-g_rtsp_servers = [None] * MAX_NUM_SOURCES
 
 pgie_classes_str= ["bowling-ball", "bowling-pins", "sweep-board"]
 
@@ -140,7 +139,7 @@ def create_uridecode_bin(index,filename):
 
 def create_output_bin(source_id):
     """Create output chain: demux src_N → queue → nvvidconv → caps(RGBA) → nvosd → nvvidconv2 → caps(I420) → encoder → rtppay → udpsink"""
-    global pipeline, demux, g_rtsp_servers, rtsp_server
+    global pipeline, demux, rtsp_server
 
     # Request demux src pad
     pad_name = f"src_{source_id}"
@@ -371,7 +370,7 @@ def add_sources(data):
 
 def restart_source(source_id):
     """Restart a source by stopping and recreating it and its output bin"""
-    global g_source_uris, g_source_enabled, g_source_bin_list, g_output_bins, g_rtsp_servers, pipeline, g_num_sources
+    global g_source_uris, g_source_enabled, g_source_bin_list, g_output_bins, pipeline, g_num_sources, rtsp_server
 
     if source_id < 0 or source_id >= MAX_NUM_SOURCES:
         print(f"Invalid source_id {source_id}")
@@ -409,7 +408,7 @@ def restart_source(source_id):
     if not g_source_enabled[source_id]:
         g_source_enabled[source_id] = True
         g_num_sources += 1
-        print(f"✓ Enabled source {source_id}, g_num_sources now {g_num_sources}")
+        print(f"✓ Enabled source {source_id}")
 
     # Relink output bin (keep elements alive, just reconnect demux pad)
     if g_output_bins[source_id] and g_output_bins[source_id].get("elements"):
@@ -450,6 +449,20 @@ def restart_source(source_id):
             state_return = elem.set_state(Gst.State.PLAYING)
             if state_return == Gst.StateChangeReturn.ASYNC:
                 elem.get_state(Gst.CLOCK_TIME_NONE)
+
+        # Create RTSP factory dynamically for this source (if not source 0)
+        if source_id > 0:
+            try:
+                mounts = rtsp_server.get_mount_points()
+                path = f"/x{source_id}"
+                factory = GstRtspServer.RTSPMediaFactory.new()
+                launch_str = f"( udpsrc name=pay0 port={5001 + source_id} buffer-size=524288 caps=\"application/x-rtp, media=video, clock-rate=90000, encoding-name=H264, payload=96\" )"
+                factory.set_launch(launch_str)
+                factory.set_shared(True)
+                mounts.add_factory(path, factory)
+                print(f"✓ RTSP factory created at {path} (listening on UDP {5001 + source_id})")
+            except Exception as e:
+                print(f"⚠ Failed to create RTSP factory for {path}: {e}")
 
     print(f"✓ Restarted source {source_id}")
     return True
@@ -515,7 +528,6 @@ def main(args):
     global g_num_sources
     global g_source_bin_list
     global g_output_bins
-    global g_rtsp_servers
     global uri
 
     global loop
@@ -623,18 +635,16 @@ def main(args):
     rtsp_server.attach(None)
     print("✓ RTSP server created on port 9600\n")
 
-    # Create RTSP factories for all sources ONCE (never touched again, like tiled version)
-    print("Creating RTSP factories...\n")
+    # Create RTSP factory for first source (others created on-demand)
+    print("Creating RTSP factory for source 0...\n")
     mounts = rtsp_server.get_mount_points()
-    for i in range(total_sources):
-        path = f"/x{i}"
-        factory = GstRtspServer.RTSPMediaFactory.new()
-        launch_str = f"( udpsrc name=pay0 port={5001 + i} buffer-size=524288 caps=\"application/x-rtp, media=video, clock-rate=90000, encoding-name=H264, payload=96\" )"
-        factory.set_launch(launch_str)
-        factory.set_shared(True)
-        mounts.add_factory(path, factory)
-        print(f"✓ RTSP factory created at {path} (listening on UDP {5001 + i})")
-    print()
+    path = "/x0"
+    factory = GstRtspServer.RTSPMediaFactory.new()
+    launch_str = f"( udpsrc name=pay0 port=5001 buffer-size=524288 caps=\"application/x-rtp, media=video, clock-rate=90000, encoding-name=H264, payload=96\" )"
+    factory.set_launch(launch_str)
+    factory.set_shared(True)
+    mounts.add_factory(path, factory)
+    print(f"✓ RTSP factory created at {path} (listening on UDP 5001)\n")
 
     # Create output bin for first source (others created on-demand via restart API)
     print("Creating output bin for source 0...\n")
