@@ -1,10 +1,11 @@
 #!/bin/bash
 
-echo "Stopping all containers..."
-docker ps -qa | xargs -r docker stop 2>/dev/null
+echo "Stopping ds-single container..."
+docker stop ds-single 2>/dev/null
+docker rm ds-single 2>/dev/null
 
 echo "Building ds-single image..."
-docker build -f Dockerfile -t ds-single:latest .
+docker build -t ds-single:latest .
 
 if [ $? -eq 0 ]; then
     echo "✓ ds-single image built successfully"
