@@ -416,8 +416,9 @@ def bus_call(bus, message, loop):
     global g_eos_list
     t = message.type
     if t == Gst.MessageType.EOS:
-        sys.stdout.write("End-of-stream\n")
-        loop.quit()
+        sys.stdout.write("End-of-stream (all sources disconnected, keeping service alive for manual restart)\n")
+        # Don't quit - keep HTTP API available for stream restart via /stream/restart endpoint
+        # loop.quit()
     elif t==Gst.MessageType.WARNING:
         err, debug = message.parse_warning()
         sys.stderr.write("Warning: %s: %s\n" % (err, debug))
