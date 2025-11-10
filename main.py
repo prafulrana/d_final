@@ -254,17 +254,20 @@ def stop_release_source(source_id):
 
     # Unlink and release demux pad, but keep output elements alive (like tiled version)
     if g_output_bins[source_id]:
-        demux_src = g_output_bins[source_id]["demux_src"]
-        # Unlink demux from queue
-        queue = g_output_bins[source_id]["elements"][0]  # First element is queue
-        queue_sink = queue.get_static_pad("sink")
-        if demux_src and queue_sink:
-            demux_src.unlink(queue_sink)
-        # Release demux pad
-        if demux_src:
-            demux.release_request_pad(demux_src)
-        # Keep output elements alive, just clear demux_src reference
-        g_output_bins[source_id]["demux_src"] = None
+        try:
+            demux_src = g_output_bins[source_id]["demux_src"]
+            # Unlink demux from queue
+            queue = g_output_bins[source_id]["elements"][0]  # First element is queue
+            queue_sink = queue.get_static_pad("sink")
+            if demux_src and queue_sink:
+                demux_src.unlink(queue_sink)
+            # Release demux pad
+            if demux_src:
+                demux.release_request_pad(demux_src)
+            # Keep output elements alive, just clear demux_src reference
+            g_output_bins[source_id]["demux_src"] = None
+        except Exception as e:
+            print(f"Warning: Exception during pad cleanup: {e}")
 
 
 def delete_sources(data):
@@ -397,21 +400,29 @@ def restart_source(source_id):
 
     # Relink output bin (keep elements alive, just reconnect demux pad)
     if g_output_bins[source_id] and g_output_bins[source_id].get("elements"):
-        # Output bin exists, just relink demux pad
-        pad_name = f"src_{source_id}"
-        demux_src = demux.request_pad_simple(pad_name)
-        if not demux_src:
-            print(f"✗ Failed to get demux pad {pad_name}")
-            return False
+        try:
+            # Output bin exists, just relink demux pad
+            pad_name = f"src_{source_id}"
+            demux_src = demux.request_pad_simple(pad_name)
+            if not demux_src:
+                print(f"✗ Failed to get demux pad {pad_name}")
+                return False
 
-        queue = g_output_bins[source_id]["elements"][0]  # First element is queue
-        queue_sink = queue.get_static_pad("sink")
-        if demux_src.link(queue_sink) != Gst.PadLinkReturn.OK:
-            print(f"✗ Failed to relink demux to queue for stream {source_id}")
-            return False
+            queue = g_output_bins[source_id]["elements"][0]  # First element is queue
+            queue_sink = queue.get_static_pad("sink")
+            if not queue_sink:
+                print(f"✗ Queue sink pad is None for stream {source_id}")
+                return False
 
-        g_output_bins[source_id]["demux_src"] = demux_src
-        print(f"✓ Relinked output bin for stream {source_id}")
+            if demux_src.link(queue_sink) != Gst.PadLinkReturn.OK:
+                print(f"✗ Failed to relink demux to queue for stream {source_id}")
+                return False
+
+            g_output_bins[source_id]["demux_src"] = demux_src
+            print(f"✓ Relinked output bin for stream {source_id}")
+        except Exception as e:
+            print(f"✗ Exception during pad relinking: {e}")
+            return False
     else:
         # Output bin doesn't exist, create it (first time)
         output_bin = create_output_bin(source_id)
@@ -443,12 +454,13 @@ def bus_call(bus, message, loop):
     elif t == Gst.MessageType.ERROR:
         err, debug = message.parse_error()
         sys.stderr.write("Error: %s: %s\n" % (err, debug))
-        # Don't quit on source-level errors, only pipeline-level
+        # Don't quit on errors - keep service alive for restart API
+        # All errors are considered non-fatal to keep HTTP API available
         src = message.src
-        if src and ("source-bin" in src.get_name() or "uridecodebin" in src.get_name()):
-            sys.stderr.write(f"Stream source error (non-fatal), continuing...\n")
+        if src:
+            sys.stderr.write(f"Error from {src.get_name()} (non-fatal), continuing...\n")
         else:
-            loop.quit()
+            sys.stderr.write(f"Pipeline error (non-fatal), continuing...\n")
     elif t == Gst.MessageType.ELEMENT:
         struct = message.get_structure()
         #Check for stream-eos message
@@ -480,7 +492,7 @@ def http_restart_stream():
 def http_status():
     active = [i for i in range(MAX_NUM_SOURCES) if g_source_enabled[i]]
     uris = {i: g_source_uris.get(i, "") for i in active}
-    rtsp_paths = {i: f"/x{i+1}" for i in active}
+    rtsp_paths = {i: f"/x{i}" for i in active}
     return jsonify({"active_streams": active, "count": len(active), "uris": uris, "rtsp_server": "rtsp://localhost:9600", "rtsp_paths": rtsp_paths})
 
 def run_flask():
@@ -596,7 +608,7 @@ def main(args):
     print("Creating RTSP factories...\n")
     mounts = rtsp_server.get_mount_points()
     for i in range(num_sources):
-        path = f"/x{i + 1}"
+        path = f"/x{i}"
         factory = GstRtspServer.RTSPMediaFactory.new()
         launch_str = f"( udpsrc name=pay0 port={5001 + i} buffer-size=524288 caps=\"application/x-rtp, media=video, clock-rate=90000, encoding-name=H264, payload=96\" )"
         factory.set_launch(launch_str)
@@ -655,7 +667,7 @@ def main(args):
     print(f"\nRTSP Server: rtsp://localhost:9600")
     print("RTSP Paths:")
     for i in range(num_sources):
-        print(f"  Stream {i} (in_s{i}): /x{i+1}")
+        print(f"  Stream {i} (in_s{i}): /x{i}")
     print("\nHTTP Control API (port 5555):")
     print("  POST /stream/restart {\"id\": 0}")
     print("  GET  /stream/status")
