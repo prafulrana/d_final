@@ -159,6 +159,7 @@ def create_output_bin(source_id):
     encoder.set_property("bitrate", 4000000)
     encoder.set_property("insert-sps-pps", True)
     encoder.set_property("idrinterval", 30)  # IDR frame every 30 frames (~1 sec at 30fps)
+    encoder.set_property("iframeinterval", 0)  # Force IDR at start
 
     rtppay = Gst.ElementFactory.make("rtph264pay", f"rtppay-{source_id}")
     udpsink = Gst.ElementFactory.make("udpsink", f"udpsink-{source_id}")
@@ -205,19 +206,9 @@ def create_output_bin(source_id):
         print(f"✗ Failed to link rtppay to udpsink for stream {source_id}")
         return None
 
-    # Add factory to global RTSP server with path /x{source_id+1}
-    path = f"/x{source_id + 1}"
-    factory = GstRtspServer.RTSPMediaFactory.new()
-    launch_str = f"( udpsrc name=pay0 port={5001 + source_id} buffer-size=524288 caps=\"application/x-rtp, media=video, clock-rate=90000, encoding-name=H264, payload=96\" )"
-    factory.set_launch(launch_str)
-    factory.set_shared(True)
-
-    mounts = rtsp_server.get_mount_points()
-    mounts.add_factory(path, factory)
-
-    print(f"✓ RTSP path ready at rtsp://localhost:9600{path}")
-
-    return {"elements": elements, "demux_src": demux_src, "factory": factory}
+    # Factory is created once at startup and lives forever (like tiled version)
+    # No factory management here - just return output elements
+    return {"elements": elements, "demux_src": demux_src}
 
 
 def stop_release_source(source_id):
@@ -237,9 +228,10 @@ def stop_release_source(source_id):
         print(pad_name)
         #Retrieve sink pad to be released
         sinkpad = streammux.get_static_pad(pad_name)
-        #Send flush stop event to the sink pad, then release from the streammux
-        sinkpad.send_event(Gst.Event.new_flush_stop(False))
-        streammux.release_request_pad(sinkpad)
+        if sinkpad:
+            #Send flush stop event to the sink pad, then release from the streammux
+            sinkpad.send_event(Gst.Event.new_flush_stop(False))
+            streammux.release_request_pad(sinkpad)
         print("STATE CHANGE SUCCESS\n")
         #Remove the source bin from the pipeline
         pipeline.remove(g_source_bin_list[source_id])
@@ -253,25 +245,26 @@ def stop_release_source(source_id):
         pad_name = "sink_%u" % source_id
         print(pad_name)
         sinkpad = streammux.get_static_pad(pad_name)
-        sinkpad.send_event(Gst.Event.new_flush_stop(False))
-        streammux.release_request_pad(sinkpad)
+        if sinkpad:
+            sinkpad.send_event(Gst.Event.new_flush_stop(False))
+            streammux.release_request_pad(sinkpad)
         print("STATE CHANGE ASYNC\n")
         pipeline.remove(g_source_bin_list[source_id])
         g_num_sources -= 1
 
-    # Stop and remove output bin
+    # Unlink and release demux pad, but keep output elements alive (like tiled version)
     if g_output_bins[source_id]:
-        # Remove RTSP factory first to release UDP port
-        path = f"/x{source_id + 1}"
-        mounts = rtsp_server.get_mount_points()
-        mounts.remove_factory(path)
-
-        for elem in g_output_bins[source_id]["elements"]:
-            elem.set_state(Gst.State.NULL)
-            pipeline.remove(elem)
         demux_src = g_output_bins[source_id]["demux_src"]
-        demux.release_request_pad(demux_src)
-        g_output_bins[source_id] = None
+        # Unlink demux from queue
+        queue = g_output_bins[source_id]["elements"][0]  # First element is queue
+        queue_sink = queue.get_static_pad("sink")
+        if demux_src and queue_sink:
+            demux_src.unlink(queue_sink)
+        # Release demux pad
+        if demux_src:
+            demux.release_request_pad(demux_src)
+        # Keep output elements alive, just clear demux_src reference
+        g_output_bins[source_id]["demux_src"] = None
 
 
 def delete_sources(data):
@@ -402,17 +395,37 @@ def restart_source(source_id):
     if state_return == Gst.StateChangeReturn.ASYNC:
         source_bin.get_state(Gst.CLOCK_TIME_NONE)
 
-    # Recreate output bin
-    output_bin = create_output_bin(source_id)
-    if not output_bin:
-        print(f"✗ Failed to recreate output for stream {source_id}")
-        return False
+    # Relink output bin (keep elements alive, just reconnect demux pad)
+    if g_output_bins[source_id] and g_output_bins[source_id].get("elements"):
+        # Output bin exists, just relink demux pad
+        pad_name = f"src_{source_id}"
+        demux_src = demux.request_pad_simple(pad_name)
+        if not demux_src:
+            print(f"✗ Failed to get demux pad {pad_name}")
+            return False
 
-    g_output_bins[source_id] = output_bin
+        queue = g_output_bins[source_id]["elements"][0]  # First element is queue
+        queue_sink = queue.get_static_pad("sink")
+        if demux_src.link(queue_sink) != Gst.PadLinkReturn.OK:
+            print(f"✗ Failed to relink demux to queue for stream {source_id}")
+            return False
 
-    # Sync output elements state with pipeline
-    for elem in output_bin["elements"]:
-        elem.sync_state_with_parent()
+        g_output_bins[source_id]["demux_src"] = demux_src
+        print(f"✓ Relinked output bin for stream {source_id}")
+    else:
+        # Output bin doesn't exist, create it (first time)
+        output_bin = create_output_bin(source_id)
+        if not output_bin:
+            print(f"✗ Failed to create output for stream {source_id}")
+            return False
+
+        g_output_bins[source_id] = output_bin
+
+        # Set output elements to PLAYING state
+        for elem in output_bin["elements"]:
+            state_return = elem.set_state(Gst.State.PLAYING)
+            if state_return == Gst.StateChangeReturn.ASYNC:
+                elem.get_state(Gst.CLOCK_TIME_NONE)
 
     print(f"✓ Restarted source {source_id}")
     return True
@@ -578,6 +591,19 @@ def main(args):
     rtsp_server.props.service = "9600"
     rtsp_server.attach(None)
     print("✓ RTSP server created on port 9600\n")
+
+    # Create RTSP factories for all sources ONCE (never touched again, like tiled version)
+    print("Creating RTSP factories...\n")
+    mounts = rtsp_server.get_mount_points()
+    for i in range(num_sources):
+        path = f"/x{i + 1}"
+        factory = GstRtspServer.RTSPMediaFactory.new()
+        launch_str = f"( udpsrc name=pay0 port={5001 + i} buffer-size=524288 caps=\"application/x-rtp, media=video, clock-rate=90000, encoding-name=H264, payload=96\" )"
+        factory.set_launch(launch_str)
+        factory.set_shared(True)
+        mounts.add_factory(path, factory)
+        print(f"✓ RTSP factory created at {path} (listening on UDP {5001 + i})")
+    print()
 
     # Create output bins for each source
     print("Creating output bins for each source...\n")

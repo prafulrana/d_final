@@ -30,7 +30,8 @@ case "$1" in
         echo "  Examples:"
         echo "    $0 logs              # Show last 30 lines"
         echo "    $0 logs 50           # Show last 50 lines"
-        echo "    $0 logs 50 'in_s0'   # Show last 50 lines filtered by 'in_s0'"
+        echo "    $0 logs 50 'x1'      # Show last 50 lines filtered by 'x1'"
+        echo "    $0 logs 50 'x2|x3'   # Show last 50 lines filtered by 'x2' or 'x3'"
         exit 1
         ;;
 esac

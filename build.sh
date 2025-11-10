@@ -1,11 +1,14 @@
 #!/bin/bash
 
-echo "Building ds-s1 image (--no-cache to ensure fresh build)..."
-docker build --no-cache -f Dockerfile.s1 -t ds-s1:latest .
+echo "Stopping all containers..."
+docker ps -qa | xargs -r docker stop 2>/dev/null
+
+echo "Building ds-single image..."
+docker build -f Dockerfile -t ds-single:latest .
 
 if [ $? -eq 0 ]; then
-    echo "✓ ds-s1 image built successfully"
+    echo "✓ ds-single image built successfully"
 else
-    echo "✗ Failed to build ds-s1 image"
+    echo "✗ Failed to build ds-single image"
     exit 1
 fi
