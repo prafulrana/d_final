@@ -261,6 +261,11 @@ def stop_release_source(source_id):
 
     # Stop and remove output bin
     if g_output_bins[source_id]:
+        # Remove RTSP factory first to release UDP port
+        path = f"/x{source_id + 1}"
+        mounts = rtsp_server.get_mount_points()
+        mounts.remove_factory(path)
+
         for elem in g_output_bins[source_id]["elements"]:
             elem.set_state(Gst.State.NULL)
             pipeline.remove(elem)
