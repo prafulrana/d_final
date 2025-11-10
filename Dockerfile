@@ -11,8 +11,9 @@ RUN cd /opt/nvidia/deepstream/deepstream-8.0 && \
     ./user_deepstream_python_apps_install.sh --build-bindings
 
 # Copy main application and dependencies
+COPY config.py /app/config.py
+COPY pipeline.py /app/pipeline.py
 COPY main.py /app/main.py
-COPY bus_call.py /app/bus_call.py
 COPY libnvdsinfer_custom_impl_Yolo.so /app/libnvdsinfer_custom_impl_Yolo.so
 COPY config_tracker_NvDCF_perf.yml /app/config_tracker_NvDCF_perf.yml
 
