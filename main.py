@@ -18,120 +18,100 @@
 ################################################################################
 
 import sys
-import gi
-import configparser
 import threading
-from flask import Flask, request, jsonify
+import time
+
+import gi
 gi.require_version('Gst', '1.0')
 gi.require_version('GstRtspServer', '1.0')
 from gi.repository import Gst, GLib, GstRtspServer
-from ctypes import *
-import time
-import math
-import random
-import platform
 
-import pyds
+from flask import Flask, request, jsonify
 
-MAX_DISPLAY_LEN=64
-PGIE_CLASS_ID_BALL = 0
-PGIE_CLASS_ID_PINS = 1
-PGIE_CLASS_ID_SWEEP = 2
-MUXER_OUTPUT_WIDTH=720
-MUXER_OUTPUT_HEIGHT=1280
-MUXER_BATCH_TIMEOUT_USEC = 33000
+# Pipeline configuration
 GPU_ID = 0
 MAX_NUM_SOURCES = 36
+MUXER_OUTPUT_WIDTH = 720
+MUXER_OUTPUT_HEIGHT = 1280
+MUXER_BATCH_TIMEOUT_USEC = 33000
 PGIE_CONFIG_FILE = "/config/bowling_yolo12n_batch.txt"
 
-CONFIG_GPU_ID = "gpu-id"
+# Network configuration
+RTSP_SERVER_PORT = 9600
+RTSP_UDPSINK_BASE_PORT = 5001
+HTTP_API_PORT = 5555
 
+# Stream restart delay
+SOURCE_RESTART_DELAY_SEC = 0.5
+
+# Global state
 g_num_sources = 0
-g_source_id_list = [0] * MAX_NUM_SOURCES
 g_eos_list = [False] * MAX_NUM_SOURCES
 g_source_enabled = [False] * MAX_NUM_SOURCES
 g_source_bin_list = [None] * MAX_NUM_SOURCES
-g_source_uris = {}  # Store original URIs for each source
+g_source_uris = {}
 g_output_bins = [None] * MAX_NUM_SOURCES
 
-pgie_classes_str= ["bowling-ball", "bowling-pins", "sweep-board"]
-
-uri = ""
-
+# Pipeline elements
 loop = None
 pipeline = None
 streammux = None
 pgie = None
 demux = None
-rtsp_server = None  # Single RTSP server for all streams
+rtsp_server = None
 
-def decodebin_child_added(child_proxy,Object,name,user_data):
-    print("Decodebin child added:", name, "\n")
-    if(name.find("decodebin") != -1):
-        Object.connect("child-added",decodebin_child_added,user_data)
-    if(name.find("nvv4l2decoder") != -1):
+def decodebin_child_added(child_proxy, Object, name, user_data):
+    """Handle decodebin child elements - set GPU ID and force TCP for RTSP"""
+    if name.find("decodebin") != -1:
+        Object.connect("child-added", decodebin_child_added, user_data)
+    elif name.find("nvv4l2decoder") != -1:
         Object.set_property("gpu_id", GPU_ID)
-    if name.find("source") != -1:
+    elif name.find("source") != -1:
         try:
             # Force TCP protocol for RTSP to avoid 5s UDP timeout
             Object.set_property("protocols", 0x00000004)  # GST_RTSP_LOWER_TRANS_TCP
             print(f"✓ Set {name} to TCP-only")
-        except Exception as e:
-            pass
+        except Exception:
+            pass  # Not all sources support protocols property
 
 
-def cb_newpad(decodebin,pad,data):
+def cb_newpad(decodebin, pad, source_id):
+    """Link decoded video pad to streammux"""
     global streammux
-    print("In cb_newpad\n")
-    caps=pad.get_current_caps()
-    gststruct=caps.get_structure(0)
-    gstname=gststruct.get_name()
 
-    # Need to check if the pad created by the decodebin is for video and not
-    # audio.
-    print("gstname=",gstname)
-    if(gstname.find("video")!=-1):
-        source_id = data
-        pad_name = "sink_%u" % source_id
-        print(pad_name)
-        #Get a sink pad from the streammux, link to decodebin
+    caps = pad.get_current_caps()
+    gststruct = caps.get_structure(0)
+    gstname = gststruct.get_name()
+
+    if gstname.find("video") != -1:
+        pad_name = f"sink_{source_id}"
         sinkpad = streammux.request_pad_simple(pad_name)
         if not sinkpad:
-            sys.stderr.write("Unable to create sink pad bin \n")
+            sys.stderr.write(f"Unable to create sink pad {pad_name}\n")
+            return
+
         if pad.link(sinkpad) == Gst.PadLinkReturn.OK:
-            print("Decodebin linked to pipeline")
+            print(f"Decodebin linked to pipeline: {pad_name}")
         else:
-            sys.stderr.write("Failed to link decodebin to pipeline\n")
+            sys.stderr.write(f"Failed to link decodebin to pipeline: {pad_name}\n")
 
 
-def create_uridecode_bin(index,filename):
-    global g_source_id_list
-    global g_source_uris
-    print("Creating uridecodebin for [%s]" % filename)
+def create_uridecode_bin(index, filename):
+    """Create uridecodebin for a given source"""
+    global g_source_uris, g_source_enabled
 
-    # Store the URI for this source
+    print(f"Creating uridecodebin for [{filename}]")
     g_source_uris[index] = filename
 
-    # Create a source GstBin to abstract this bin's content from the rest of the
-    # pipeline
-    g_source_id_list[index] = index
-    bin_name="source-bin-%02d" % index
-    print(bin_name)
-
-    # Source element for reading from the uri.
-    # We will use decodebin and let it figure out the container format of the
-    # stream and the codec and plug the appropriate demux and decode plugins.
-    bin=Gst.ElementFactory.make("uridecodebin", bin_name)
+    bin_name = f"source-bin-{index:02d}"
+    bin = Gst.ElementFactory.make("uridecodebin", bin_name)
     if not bin:
-        sys.stderr.write(" Unable to create uri decode bin \n")
-    # We set the input uri to the source element
-    bin.set_property("uri",filename)
-    # Connect to the "pad-added" signal of the decodebin which generates a
-    # callback once a new pad for raw data has been created by the decodebin
-    bin.connect("pad-added",cb_newpad,g_source_id_list[index])
-    bin.connect("child-added",decodebin_child_added,g_source_id_list[index])
+        sys.stderr.write(f"Unable to create uri decode bin {bin_name}\n")
+        return None
 
-    #Set status of the source to enabled
+    bin.set_property("uri", filename)
+    bin.connect("pad-added", cb_newpad, index)
+    bin.connect("child-added", decodebin_child_added, index)
     g_source_enabled[index] = True
 
     return bin
@@ -170,7 +150,7 @@ def create_output_bin(source_id):
     rtppay = Gst.ElementFactory.make("rtph264pay", f"rtppay-{source_id}")
     udpsink = Gst.ElementFactory.make("udpsink", f"udpsink-{source_id}")
     udpsink.set_property("host", "127.0.0.1")
-    udpsink.set_property("port", 5001 + source_id)  # Port for RTSP udpsrc
+    udpsink.set_property("port", RTSP_UDPSINK_BASE_PORT + source_id)
     udpsink.set_property("async", False)
     udpsink.set_property("sync", 0)
 
@@ -218,155 +198,42 @@ def create_output_bin(source_id):
 
 
 def stop_release_source(source_id):
-    global g_num_sources
-    global g_source_bin_list
-    global g_output_bins
-    global streammux
-    global demux
-    global pipeline
+    """Stop and release a source bin from the pipeline"""
+    global g_num_sources, g_source_bin_list, g_output_bins, streammux, demux, pipeline
 
-    #Attempt to change status of source to be released
     state_return = g_source_bin_list[source_id].set_state(Gst.State.NULL)
 
-    if state_return == Gst.StateChangeReturn.SUCCESS:
-        print("STATE CHANGE SUCCESS\n")
-        pad_name = "sink_%u" % source_id
-        print(pad_name)
-        #Retrieve sink pad to be released
-        sinkpad = streammux.get_static_pad(pad_name)
-        if sinkpad:
-            #Send flush stop event to the sink pad, then release from the streammux
-            sinkpad.send_event(Gst.Event.new_flush_stop(False))
-            streammux.release_request_pad(sinkpad)
-        print("STATE CHANGE SUCCESS\n")
-        #Remove the source bin from the pipeline
-        pipeline.remove(g_source_bin_list[source_id])
-        g_num_sources -= 1
+    if state_return == Gst.StateChangeReturn.ASYNC:
+        g_source_bin_list[source_id].get_state(Gst.CLOCK_TIME_NONE)
 
-    elif state_return == Gst.StateChangeReturn.FAILURE:
-        print("STATE CHANGE FAILURE\n")
-
-    elif state_return == Gst.StateChangeReturn.ASYNC:
-        state_return = g_source_bin_list[source_id].get_state(Gst.CLOCK_TIME_NONE)
-        pad_name = "sink_%u" % source_id
-        print(pad_name)
+    if state_return != Gst.StateChangeReturn.FAILURE:
+        # Release streammux sink pad
+        pad_name = f"sink_{source_id}"
         sinkpad = streammux.get_static_pad(pad_name)
         if sinkpad:
             sinkpad.send_event(Gst.Event.new_flush_stop(False))
             streammux.release_request_pad(sinkpad)
-        print("STATE CHANGE ASYNC\n")
+
         pipeline.remove(g_source_bin_list[source_id])
         g_num_sources -= 1
+        print(f"Released source {source_id}")
+    else:
+        print(f"Failed to stop source {source_id}")
 
-    # Unlink and release demux pad, but keep output elements alive (like tiled version)
+    # Unlink and release demux pad, keep output elements alive
     if g_output_bins[source_id]:
         try:
             demux_src = g_output_bins[source_id]["demux_src"]
-            # Unlink demux from queue
-            queue = g_output_bins[source_id]["elements"][0]  # First element is queue
-            queue_sink = queue.get_static_pad("sink")
-            if demux_src and queue_sink:
-                demux_src.unlink(queue_sink)
-            # Release demux pad
             if demux_src:
+                queue = g_output_bins[source_id]["elements"][0]
+                queue_sink = queue.get_static_pad("sink")
+                if queue_sink:
+                    demux_src.unlink(queue_sink)
                 demux.release_request_pad(demux_src)
-            # Keep output elements alive, just clear demux_src reference
-            g_output_bins[source_id]["demux_src"] = None
+                g_output_bins[source_id]["demux_src"] = None
         except Exception as e:
-            print(f"Warning: Exception during pad cleanup: {e}")
+            print(f"Warning during pad cleanup: {e}")
 
-
-def delete_sources(data):
-    global loop
-    global g_num_sources
-    global g_eos_list
-    global g_source_enabled
-
-    #First delete sources that have reached end of stream
-    for source_id in range(MAX_NUM_SOURCES):
-        if (g_eos_list[source_id] and g_source_enabled[source_id]):
-            g_source_enabled[source_id] = False
-            stop_release_source(source_id)
-
-    #Quit if no sources remaining
-    if (g_num_sources == 0):
-        loop.quit()
-        print("All sources stopped quitting")
-        return False
-
-    #Randomly choose an enabled source to delete
-    source_id = random.randrange(0, MAX_NUM_SOURCES)
-    while (not g_source_enabled[source_id]):
-        source_id = random.randrange(0, MAX_NUM_SOURCES)
-    #Disable the source
-    g_source_enabled[source_id] = False
-    #Release the source
-    print("Calling Stop %d " % source_id)
-    stop_release_source(source_id)
-
-    #Quit if no sources remaining
-    if (g_num_sources == 0):
-        loop.quit()
-        print("All sources stopped quitting")
-        return False
-
-    return True
-
-
-def add_sources(data):
-    global g_num_sources
-    global g_source_enabled
-    global g_source_bin_list
-    global pipeline
-
-    source_id = g_num_sources
-
-    #Randomly select an un-enabled source to add
-    source_id = random.randrange(0, MAX_NUM_SOURCES)
-    while (g_source_enabled[source_id]):
-        source_id = random.randrange(0, MAX_NUM_SOURCES)
-
-    #Enable the source
-    g_source_enabled[source_id] = True
-
-    print("Calling Start %d " % source_id)
-
-    #Create a uridecode bin with the chosen source id
-    source_bin = create_uridecode_bin(source_id, uri)
-
-    if (not source_bin):
-        sys.stderr.write("Failed to create source bin. Exiting.")
-        exit(1)
-
-    #Add source bin to our list and to pipeline
-    g_source_bin_list[source_id] = source_bin
-    pipeline.add(source_bin)
-
-    #Set state of source bin to playing
-    state_return = g_source_bin_list[source_id].set_state(Gst.State.PLAYING)
-
-    if state_return == Gst.StateChangeReturn.SUCCESS:
-        print("STATE CHANGE SUCCESS\n")
-        source_id += 1
-
-    elif state_return == Gst.StateChangeReturn.FAILURE:
-        print("STATE CHANGE FAILURE\n")
-
-    elif state_return == Gst.StateChangeReturn.ASYNC:
-        state_return = g_source_bin_list[source_id].get_state(Gst.CLOCK_TIME_NONE)
-        source_id += 1
-
-    elif state_return == Gst.StateChangeReturn.NO_PREROLL:
-        print("STATE CHANGE NO PREROLL\n")
-
-    g_num_sources += 1
-
-    #If reached the maximum number of sources, delete sources every 10 seconds
-    if (g_num_sources == MAX_NUM_SOURCES):
-        GLib.timeout_add_seconds(10, delete_sources, g_source_bin_list)
-        return False
-
-    return True
 
 def restart_source(source_id):
     """Restart a source by stopping and recreating it and its output bin"""
@@ -386,9 +253,7 @@ def restart_source(source_id):
     # Stop and release the old source
     if g_source_enabled[source_id]:
         stop_release_source(source_id)
-
-    # Wait a moment for cleanup
-    time.sleep(0.5)
+        time.sleep(SOURCE_RESTART_DELAY_SEC)
 
     # Recreate the source
     source_bin = create_uridecode_bin(source_id, uri)
@@ -455,12 +320,13 @@ def restart_source(source_id):
             try:
                 mounts = rtsp_server.get_mount_points()
                 path = f"/x{source_id}"
+                port = RTSP_UDPSINK_BASE_PORT + source_id
                 factory = GstRtspServer.RTSPMediaFactory.new()
-                launch_str = f"( udpsrc name=pay0 port={5001 + source_id} buffer-size=524288 caps=\"application/x-rtp, media=video, clock-rate=90000, encoding-name=H264, payload=96\" )"
+                launch_str = f"( udpsrc name=pay0 port={port} buffer-size=524288 caps=\"application/x-rtp, media=video, clock-rate=90000, encoding-name=H264, payload=96\" )"
                 factory.set_launch(launch_str)
                 factory.set_shared(True)
                 mounts.add_factory(path, factory)
-                print(f"✓ RTSP factory created at {path} (listening on UDP {5001 + source_id})")
+                print(f"✓ RTSP factory created at {path} (listening on UDP {port})")
             except Exception as e:
                 print(f"⚠ Failed to create RTSP factory for {path}: {e}")
 
@@ -519,55 +385,51 @@ def http_status():
     active = [i for i in range(MAX_NUM_SOURCES) if g_source_enabled[i]]
     uris = {i: g_source_uris.get(i, "") for i in active}
     rtsp_paths = {i: f"/x{i}" for i in active}
-    return jsonify({"active_streams": active, "count": len(active), "uris": uris, "rtsp_server": "rtsp://localhost:9600", "rtsp_paths": rtsp_paths})
+    return jsonify({
+        "active_streams": active,
+        "count": len(active),
+        "uris": uris,
+        "rtsp_server": f"rtsp://localhost:{RTSP_SERVER_PORT}",
+        "rtsp_paths": rtsp_paths
+    })
 
 def run_flask():
-    app.run(host='0.0.0.0', port=5555, threaded=True)
+    app.run(host='0.0.0.0', port=HTTP_API_PORT, threaded=True)
 
 def main(args):
-    global g_num_sources
-    global g_source_bin_list
-    global g_output_bins
-    global uri
+    global g_num_sources, g_source_bin_list, g_output_bins
+    global loop, pipeline, streammux, pgie, demux, rtsp_server
 
-    global loop
-    global pipeline
-    global streammux
-    global pgie
-    global demux
-    global rtsp_server
-
-    # Check input arguments
     if len(args) < 2:
-        sys.stderr.write("usage: %s <uri1> [uri2] [uri3] ... \n" % args[0])
+        sys.stderr.write(f"usage: {args[0]} <uri1> [uri2] [uri3] ...\n")
         sys.exit(1)
 
-    total_sources=len(args)-1  # Total URIs provided for restart API
+    total_sources = len(args) - 1
 
-    # Standard GStreamer initialization
     Gst.init(None)
 
-    # Create gstreamer elements */
-    # Create Pipeline element that will form a connection of other elements
-    print("Creating Pipeline \n ")
+    print("Creating pipeline")
     pipeline = Gst.Pipeline()
+    if not pipeline:
+        sys.stderr.write("Unable to create pipeline\n")
+        sys.exit(1)
+
+    print("Creating streammux")
     is_live = False
 
-    if not pipeline:
-        sys.stderr.write(" Unable to create Pipeline \n")
-    print("Creating streammux \n ")
-
-    # Create nvstreammux instance to form batches from one or more sources.
     streammux = Gst.ElementFactory.make("nvstreammux", "Stream-muxer")
     if not streammux:
-        sys.stderr.write(" Unable to create NvStreamMux \n")
+        sys.stderr.write("Unable to create streammux\n")
+        sys.exit(1)
 
     streammux.set_property("batched-push-timeout", MUXER_BATCH_TIMEOUT_USEC)
     streammux.set_property("batch-size", MAX_NUM_SOURCES)
     streammux.set_property("gpu_id", GPU_ID)
+    streammux.set_property("live-source", 1)
+    streammux.set_property("width", MUXER_OUTPUT_WIDTH)
+    streammux.set_property("height", MUXER_OUTPUT_HEIGHT)
 
     pipeline.add(streammux)
-    streammux.set_property("live-source", 1)
 
     # Store all URIs for restart API
     for i in range(total_sources):
@@ -576,138 +438,105 @@ def main(args):
         if uri_name.find("rtsp://") == 0:
             is_live = True
 
-    # Create only first source at startup
-    print("Creating source_bin 0 \n ")
-    uri_name = args[1]
-    source_bin = create_uridecode_bin(0, uri_name)
+    # Create first source at startup
+    print("Creating source_bin 0")
+    source_bin = create_uridecode_bin(0, args[1])
     if not source_bin:
-        sys.stderr.write("Failed to create source bin 0. Exiting. \n")
+        sys.stderr.write("Failed to create source bin 0\n")
         sys.exit(1)
     g_source_bin_list[0] = source_bin
     pipeline.add(source_bin)
 
-    # Set active source count to 1 (only source 0 created at startup)
     num_sources = 1
     g_num_sources = 1
 
-    print("Creating Pgie \n ")
+    print("Creating pgie")
     pgie = Gst.ElementFactory.make("nvinfer", "primary-inference")
     if not pgie:
-        sys.stderr.write(" Unable to create pgie \n")
-
-    print("Creating nvstreamdemux \n")
-    demux = Gst.ElementFactory.make("nvstreamdemux", "demuxer")
-    if not demux:
-        sys.stderr.write(" Unable to create nvstreamdemux \n")
-
-    if is_live:
-        print("Atleast one of the sources is live")
-        streammux.set_property('live-source', 1)
-
-    #Set streammux width and height
-    streammux.set_property('width', MUXER_OUTPUT_WIDTH)
-    streammux.set_property('height', MUXER_OUTPUT_HEIGHT)
-    #Set pgie configuration file path
-    pgie.set_property('config-file-path', PGIE_CONFIG_FILE)
-
-    #Set necessary properties of the nvinfer element, the necessary ones are:
-    pgie_batch_size=pgie.get_property("batch-size")
-    if(pgie_batch_size < MAX_NUM_SOURCES):
-        print("WARNING: Overriding infer-config batch-size",pgie_batch_size," with number of sources ", MAX_NUM_SOURCES," \n")
-    pgie.set_property("batch-size",MAX_NUM_SOURCES)
-
-    #Set gpu ID of the inference engine
+        sys.stderr.write("Unable to create pgie\n")
+        sys.exit(1)
+    pgie.set_property("config-file-path", PGIE_CONFIG_FILE)
+    pgie.set_property("batch-size", MAX_NUM_SOURCES)
     pgie.set_property("gpu_id", GPU_ID)
 
-    print("Adding elements to Pipeline \n")
+    print("Creating demux")
+    demux = Gst.ElementFactory.make("nvstreamdemux", "demuxer")
+    if not demux:
+        sys.stderr.write("Unable to create demux\n")
+        sys.exit(1)
+
     pipeline.add(pgie)
     pipeline.add(demux)
 
-    # Link elements: streammux -> pgie -> demux
-    print("Linking elements in the Pipeline \n")
+    print("Linking pipeline: streammux -> pgie -> demux")
     streammux.link(pgie)
     pgie.link(demux)
 
-    # Create single RTSP server on port 9600
-    print("Creating RTSP server on port 9600...\n")
+    # Create RTSP server
+    print(f"Creating RTSP server on port {RTSP_SERVER_PORT}")
     rtsp_server = GstRtspServer.RTSPServer.new()
-    rtsp_server.props.service = "9600"
+    rtsp_server.props.service = str(RTSP_SERVER_PORT)
     rtsp_server.attach(None)
-    print("✓ RTSP server created on port 9600\n")
 
     # Create RTSP factory for first source (others created on-demand)
-    print("Creating RTSP factory for source 0...\n")
     mounts = rtsp_server.get_mount_points()
-    path = "/x0"
     factory = GstRtspServer.RTSPMediaFactory.new()
-    launch_str = f"( udpsrc name=pay0 port=5001 buffer-size=524288 caps=\"application/x-rtp, media=video, clock-rate=90000, encoding-name=H264, payload=96\" )"
+    launch_str = f"( udpsrc name=pay0 port={RTSP_UDPSINK_BASE_PORT} buffer-size=524288 caps=\"application/x-rtp, media=video, clock-rate=90000, encoding-name=H264, payload=96\" )"
     factory.set_launch(launch_str)
     factory.set_shared(True)
-    mounts.add_factory(path, factory)
-    print(f"✓ RTSP factory created at {path} (listening on UDP 5001)\n")
+    mounts.add_factory("/x0", factory)
+    print(f"✓ RTSP factory created at /x0 (UDP port {RTSP_UDPSINK_BASE_PORT})")
 
-    # Create output bin for first source (others created on-demand via restart API)
-    print("Creating output bin for source 0...\n")
+    # Create output bin for first source
+    print("Creating output bin for source 0")
     output_bin = create_output_bin(0)
     if not output_bin:
-        sys.stderr.write("Failed to create output bin for source 0. Exiting.\n")
+        sys.stderr.write("Failed to create output bin for source 0\n")
         sys.exit(1)
     g_output_bins[0] = output_bin
 
-    # Start Flask in separate thread
-    print("Starting HTTP control server on port 5555...")
+    # Start Flask HTTP API
+    print(f"Starting HTTP control server on port {HTTP_API_PORT}")
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    # create an event loop and feed gstreamer bus mesages to it
+    # Setup GLib event loop and bus
     loop = GLib.MainLoop()
     bus = pipeline.get_bus()
     bus.add_signal_watch()
-    bus.connect ("message", bus_call, loop)
+    bus.connect("message", bus_call, loop)
 
+    # Start pipeline
     pipeline.set_state(Gst.State.PAUSED)
-
-    # List the sources
-    print("Now playing...")
-    for i, source in enumerate(args):
-        if (i != 0):
-            print(f"{i}: {source} -> rtsp://localhost:9600/x{i}")
-
-    print("Starting pipeline \n")
-    # start play back and listed to events
+    print(f"Now playing: {args[1]} -> rtsp://localhost:{RTSP_SERVER_PORT}/x0")
     pipeline.set_state(Gst.State.PLAYING)
 
-    print("Waiting for state change\n")
+    # Wait for pipeline to reach PLAYING state
     status, state, pending = pipeline.get_state(Gst.CLOCK_TIME_NONE)
-    print(f"Current state {state}, pending state {pending}, status {status}\n")
 
-    # Sync all output elements with pipeline state
-    for i in range(num_sources):
-        if g_output_bins[i]:
-            for elem in g_output_bins[i]["elements"]:
-                elem.sync_state_with_parent()
+    # Sync output elements with pipeline
+    if g_output_bins[0]:
+        for elem in g_output_bins[0]["elements"]:
+            elem.sync_state_with_parent()
 
     print("\n" + "="*70)
-    print("✓ Individual RTSP output pipeline ready")
-    print(f"  Sources: {num_sources}")
-    print(f"  Max sources: {MAX_NUM_SOURCES}")
+    print("✓ Pipeline ready")
+    print(f"  Active sources: {num_sources}/{MAX_NUM_SOURCES}")
     print(f"  Batch size: {MAX_NUM_SOURCES}")
-    print(f"\nRTSP Server: rtsp://localhost:9600")
-    print("RTSP Paths:")
-    for i in range(num_sources):
-        print(f"  Stream {i} (in_s{i}): /x{i}")
-    print("\nHTTP Control API (port 5555):")
-    print("  POST /stream/restart {\"id\": 0}")
-    print("  GET  /stream/status")
+    print(f"\nRTSP Server: rtsp://localhost:{RTSP_SERVER_PORT}")
+    print(f"  Stream 0 (in_s0): /x0")
+    print(f"\nHTTP Control API: http://localhost:{HTTP_API_PORT}")
+    print(f"  POST /stream/restart {{\"id\": N}}")
+    print(f"  GET  /stream/status")
     print("="*70 + "\n")
 
     try:
         loop.run()
-    except:
-        pass
-    # cleanup
-    print("Exiting app\n")
-    pipeline.set_state(Gst.State.NULL)
+    except KeyboardInterrupt:
+        print("\nInterrupted by user")
+    finally:
+        print("Shutting down pipeline")
+        pipeline.set_state(Gst.State.NULL)
 
 if __name__ == '__main__':
     sys.exit(main(sys.argv))
