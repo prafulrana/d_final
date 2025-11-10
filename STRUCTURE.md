@@ -2,224 +2,242 @@
 
 ```
 d_final/
-├── README.md                    # Quick start guide
 ├── AGENTS.md                    # Architecture + operational guide
 ├── STANDARDS.md                 # Coding/config standards
 ├── STRUCTURE.md                 # This file
 │
-├── infra/                      # Infrastructure management
-│   ├── system                  # Full system manager (frpc + DeepStream)
-│   ├── relay                   # Remote relay manager (restart/status)
-│   ├── restart_stream.sh       # Stream restart utility
-│   └── scripts/
-│       ├── cache_engine.sh     # TensorRT engine cache manager
-│       ├── check.sh            # Health check validation
-│       ├── debug.sh            # Debugging diagnostics
-│       └── frpc/
-│           └── frpc.ini        # FRP client config (CONTAINS RELAY IP + TOKEN)
-│
-├── build.sh                    # Docker image builder
+├── build.sh                    # Docker image builder (ds-single:latest)
 ├── run.sh                      # Run ds-single container
 │
-├── main.py                     # Python DeepStream application (batch inference)
-├── bus_call.py                 # Bus callback utility
+├── config.py                   # Configuration constants (26 lines)
+├── pipeline.py                 # GStreamer pipeline + lifecycle (482 lines)
+├── main.py                     # Flask HTTP API (103 lines)
 ├── Dockerfile                  # Builds ds-single:latest
 ├── libnvdsinfer_custom_impl_Yolo.so  # YOLOv8 custom parser library
-├── config_tracker_NvDCF_perf.yml    # Tracker config
+├── config_tracker_NvDCF_perf.yml    # Tracker config (unused currently)
 │
 ├── config/
-│   ├── config_infer_yolov8.txt    # YOLOv8n COCO (s0-s2, 80 classes)
-│   └── config_infer_bowling.txt   # YOLOv8n bowling (s3, 1 class)
+│   └── bowling_yolo12n_batch.txt   # YOLO12n bowling @ 1280, batch-size=36
 │
 ├── models/
-│   ├── yolov8n.onnx           # YOLOv8n COCO model (s0-s2)
-│   ├── bowling.onnx           # YOLOv8n bowling model (s3)
-│   ├── coco_labels.txt        # COCO class labels (80 classes)
-│   ├── bowling_labels.txt     # Bowling class label (1 class)
-│   └── *.engine               # TensorRT engine cache (auto-generated)
+│   ├── *.onnx                  # ONNX models
+│   ├── *.txt                   # Label files
+│   └── *.engine                # TensorRT engine cache (auto-generated, gitignored)
 │
-├── training/                  # Training artifacts (gitignored)
+├── training/                   # Training artifacts (gitignored)
 │   ├── scripts/
 │   │   └── export_deepstream.sh  # DeepStream-Yolo ONNX export wrapper
-│   ├── DeepStream-Yolo/       # Custom ONNX export scripts (cloned repo)
-│   └── bowling/               # Dataset + training runs
+│   ├── DeepStream-Yolo/        # Custom ONNX export scripts (cloned repo)
+│   └── runs/                   # Training runs
 │
-└── relay_infra/               # Terraform infrastructure for relay
-    ├── main.tf                # MediaMTX relay VM
-    ├── scripts/startup.sh     # VM startup script (MediaMTX + frps server)
-    └── variables.tf           # Terraform variables
+└── infra/                      # Helper scripts (optional, may not exist)
+    ├── restart_stream.sh       # curl wrapper for /stream/restart
+    └── scripts/
+        └── ...                 # Utility scripts
 ```
+
+## Key Files
+
+### Source Code (Python)
+- **config.py** (26 lines): All configuration constants
+  - Pipeline configuration (GPU_ID, MAX_NUM_SOURCES, dimensions)
+  - Network configuration (RTSP_SERVER_PORT=9600, HTTP_API_PORT=5555)
+  - Encoder settings (bitrate, IDR interval)
+
+- **pipeline.py** (482 lines): GStreamer pipeline and lifecycle management
+  - Pipeline creation/destruction functions
+  - Source management (add/remove/restart)
+  - Output bin creation
+  - RTSP server and factory management
+  - All GStreamer callbacks
+
+- **main.py** (103 lines): Flask HTTP API only
+  - POST /stream/restart - Start/restart stream by ID
+  - GET /stream/status - Get active streams and pipeline status
+  - Lifecycle coordination (0→1 creates pipeline)
+
+### Build and Run Scripts
+- **build.sh**: Builds ds-single:latest Docker image
+  - Stops old ds-single container
+  - Builds new image with updated Python code
+
+- **run.sh**: Starts ds-single container
+  - Stops old ds-single container
+  - Starts new container with volume mounts
+  - Shows startup logs
+
+### Configuration Files
+- **config/bowling_yolo12n_batch.txt**: YOLOv8 inference config
+  - Model path: `/models/bowling_yolo12n.onnx`
+  - Engine path: `/models/bowling_yolo12n_1280_batch36.engine`
+  - Batch size: 36
+  - Network mode: 2 (FP16)
+
+### Docker
+- **Dockerfile**: Multi-stage build
+  - Base: nvcr.io/nvidia/deepstream:8.0-triton-multiarch
+  - Installs: python3-flask, python3-gi, DeepStream Python bindings
+  - Copies: config.py, pipeline.py, main.py, custom parser
+  - CMD: Runs main.py with 3 source URIs (in_s0, in_s1, in_s2)
+
+## Architecture Summary
+
+### Single Container System
+- **ds-single container**: One container, up to 36 dynamic streams
+- **HTTP API**: Flask on port 5555 for stream control
+- **RTSP server**: GstRtspServer on port 9600, paths /x0-/x35
+- **Pipeline**: Created lazily on first /stream/restart call
+
+### Data Flow
+```
+HTTP POST /stream/restart {"id": N}
+         ↓
+Flask (main.py) checks if pipeline exists
+         ↓
+If first stream (0→1): pipeline.create_pipeline(uris)
+         ↓
+GStreamer pipeline starts (pipeline.py)
+         ↓
+uridecodebin pulls RTSP → nvstreammux → nvinfer (YOLOv8) → nvstreamdemux
+         ↓
+Per-stream output chain → encoder → udpsink (port 5001+N)
+         ↓
+GstRtspServer exposes rtsp://localhost:9600/xN
+```
+
+### Code Flow
+```
+Container starts → main.py runs
+         ↓
+Flask starts listening on :5555
+         ↓
+User: POST /stream/restart {"id": 0}
+         ↓
+main.py: if pipeline.pipeline is None → pipeline.create_pipeline()
+         ↓
+pipeline.py: Creates GStreamer pipeline with first source
+         ↓
+User: POST /stream/restart {"id": 1}
+         ↓
+main.py: pipeline.restart_source(1) (pipeline already exists)
+         ↓
+pipeline.py: Adds second source to existing pipeline
+```
+
+## Typical Workflows
+
+### Start Container
+```bash
+./build.sh         # Only if Python code changed
+./run.sh          # Start ds-single container
+```
+
+### Start First Stream (Creates Pipeline)
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"id": 0}' \
+  http://localhost:5555/stream/restart
+
+# Or use helper script (if it exists)
+./infra/restart_stream.sh 0
+```
+
+### Add More Streams
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"id": 1}' \
+  http://localhost:5555/stream/restart
+
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"id": 2}' \
+  http://localhost:5555/stream/restart
+```
+
+### Check Status
+```bash
+curl http://localhost:5555/stream/status | jq
+```
+
+### View Logs
+```bash
+docker logs ds-single --tail 50
+docker logs ds-single --follow
+```
+
+### Stop Container
+```bash
+docker stop ds-single
+# Or restart with:
+./run.sh
+```
+
+### Change Model
+```bash
+# 1. Edit config.py to point to new config file
+vim config.py
+# Update: PGIE_CONFIG_FILE = "/config/new_model_config.txt"
+
+# 2. Rebuild and restart
+./build.sh
+./run.sh
+
+# DeepStream will auto-build new engine on first run
+```
+
+### Manage TensorRT Engine Cache
+```bash
+# Engines are auto-managed in /models/ (bind-mounted)
+# First run: builds engine (3-10 min)
+# Subsequent runs: loads cached engine (instant)
+
+# To force rebuild:
+rm models/*.engine
+./run.sh
+```
+
+## What NOT to Do
+
+1. **Don't edit files inside container**: Edit on host, rebuild with `./build.sh`
+2. **Don't manually create RTSP factories**: They're created dynamically by pipeline.py
+3. **Don't skip rebuilding after code changes**: Docker uses cached image
+4. **Don't forget volume mounts**: /config and /models must be mounted (see run.sh)
+
+## File Locations Summary
+
+**Source code** (edited on host):
+- `/root/d_final/config.py`
+- `/root/d_final/pipeline.py`
+- `/root/d_final/main.py`
+
+**Inside container** (after build):
+- `/app/config.py`
+- `/app/pipeline.py`
+- `/app/main.py`
+
+**Bind-mounts** (shared host↔container):
+- `/root/d_final/config/` → `/config/` (inference configs)
+- `/root/d_final/models/` → `/models/` (ONNX + TensorRT engines)
+
+**Ports**:
+- 5555: HTTP API (Flask)
+- 9600: RTSP server (GstRtspServer)
+- 5001-5036: UDP sinks (internal, used by RTSP server)
 
 ## Training Directory
 
 ```
 training/
-├── train_bowling.py                        # Training script for bowling models
-├── labels.txt                              # Class label (bowling-ball)
-│
-├── Bowling-Pin-Detection--4/               # Roboflow dataset (downloaded)
-│   ├── train/images/                       # 868 training images
-│   ├── valid/images/                       # 154 validation images
-│   ├── test/images/                        # Test images
-│   ├── data.yaml                           # Dataset config (1 class: bowling-ball)
-│   └── README.roboflow.txt                 # Dataset info
-│
-├── bowling_real_dataset/                   # Custom labeled dataset (experimental)
-│   └── ...auto-labeled frames
-│
-└── roboflow_bowling/                       # Training run outputs
-    ├── bowling_1280_m_b8/                  # YOLOv8m @ 1280x1280, batch=8 ✓ PRODUCTION
-    │   ├── weights/
-    │   │   ├── best.pt                     # Epoch 70, 92.7% precision, 88.9% recall
-    │   │   ├── best.onnx                   # Exported with dynamic=False
-    │   │   └── last.pt                     # Final epoch checkpoint
-    │   ├── results.png                     # Training curves
-    │   └── confusion_matrix.png            # Validation metrics
-    │
-    └── bowling_1280_m/                     # Earlier run (batch=16, OOM issues)
+├── scripts/
+│   └── export_deepstream.sh              # ONNX export wrapper
+├── DeepStream-Yolo/                      # Export scripts repo
+└── runs/                                 # Training outputs
+    └── train/
         └── weights/
+            ├── best.pt                   # PyTorch checkpoint
+            └── best.onnx                 # Exported ONNX
 ```
 
 **Key Points:**
-- `Bowling-Pin-Detection--4/` is gitignored (can re-download from Roboflow)
-- Training outputs (`roboflow_bowling/`) are gitignored except metadata
+- Training runs are gitignored (except metadata)
 - Production models copied to `/root/d_final/models/` and committed
 - Use Ultralytics export with `dynamic=False` for DeepStream compatibility
-
-## Key Files
-
-### Management Scripts (Root Level)
-- **system**: Full system management (start/stop/restart/status)
-  - Manages frpc tunnel + DeepStream containers together
-  - Use `infra/system start` to start frpc and all DS containers
-  - Use `infra/system status` to check frpc, DS containers, and relay health
-- **ds**: DeepStream containers only (build/start/stop/restart/status)
-  - Use `./ds start` to start containers without touching frpc
-- **relay**: Remote relay management (restart/status)
-  - SSHs to relay VM and manages frps + mediamtx containers
-  - Use `infra/relay status` to check relay health
-
-### Live Stream (Parameterized C Binary)
-- **live_stream.c**: Single binary, takes stream ID (0, 1, 2) as argv[1]
-  - Stream ID 0 → pulls `in_s0`, serves on `8554`, UDP port `5400`
-  - Stream ID 1 → pulls `in_s1`, serves on `8555`, UDP port `5401`
-  - Stream ID 2 → pulls `in_s2`, serves on `8556`, UDP port `5402`
-  - All use YOLOv8n inference (`config/config_infer_yolov8.txt`)
-  - **CONTAINS RELAY IP** (line 96: `snprintf(input_uri, ...)`)
-
-### Docker Images
-- **Dockerfile.s1**: Builds single binary `live_stream` into one image (ds-s1:latest)
-
-  - Automatically stops old container and starts new one
-
-### Configuration Files
-- **config/config_infer_yolov8.txt**: YOLOv8n detector (80 COCO classes)
-- **infra/scripts/frpc/frpc.ini**: FRP client settings (**CONTAINS RELAY IP AND TOKEN**)
-
-### Utilities (Hidden in .scripts/)
-- **infra/scripts/cache_engine.sh**: TensorRT engine cache manager (copy/list/clean)
-- **infra/scripts/check.sh**: Health check validation (used by `infra/system status`)
-- **infra/scripts/debug.sh**: Debugging diagnostics (check container logs, RTSP servers, etc.)
-
-### Relay Infrastructure
-- **relay/main.tf**: Terraform config for GCP VM
-- **relay/scripts/startup.sh**: Installs Docker, MediaMTX, frps
-  - **IMMUTABLE**: Changes require `terraform destroy` + `terraform apply`
-- **relay/README.md**: Deployment and troubleshooting guide
-
-## Files Containing Relay IP (Update After IP Change)
-
-1. `live_stream.c` (line 97: `snprintf(input_uri, ...)`)
-2. `frpc/frpc.ini` (lines 2 and 4)
-
-## Architecture Summary
-
-### Current Setup
-- **4 DeepStream containers**: ds-s0, ds-s1, ds-s2, ds-s3
-- **All pull from relay**: `rtsp://34.47.221.242:8554/in_s{0,1,2,3}`
-- **All serve locally**: `rtsp://localhost:855{4,5,6,7}/ds-test`
-- **frpc tunnels**: localhost:855X → relay:950X
-- **Relay outputs**: http://34.47.221.242:8889/s{0,1,2,3}/
-
-### Data Flow
-```
-Camera → in_s0 (relay) → ds-s0 (COCO YOLOv8) → localhost:8554 → frpc → relay:9500 → s0 (WebRTC)
-Camera → in_s1 (relay) → ds-s1 (COCO YOLOv8) → localhost:8555 → frpc → relay:9501 → s1 (WebRTC)
-Camera → in_s2 (relay) → ds-s2 (COCO YOLOv8) → localhost:8556 → frpc → relay:9502 → s2 (WebRTC)
-Bowling → in_s3 (relay) → ds-s3 (Bowling YOLOv8) → localhost:8557 → frpc → relay:9503 → s3 (WebRTC)
-```
-
-### Why This Architecture?
-1. **Relay is public**: Acts as STUN server for WebRTC, accessible from anywhere
-2. **DeepStream is local**: GPU machine behind NAT, can't accept incoming connections
-3. **frp tunnels**: Bridge the gap - DeepStream serves RTSP locally, frpc tunnels to relay
-4. **Relay pulls**: MediaMTX on relay pulls from tunneled RTSP servers
-
-## Typical Workflows
-
-### Start Everything
-```bash
-./build.sh         # Only if live_stream.c changed
-```
-
-### Stop Everything
-```bash
-infra/system stop      # Stop all containers + frpc
-```
-
-### DeepStream Only (without frpc)
-```bash
-./ds stop          # Stop all containers
-./ds status        # Check container status
-```
-
-```bash
-```
-
-### Check System Health
-```bash
-infra/system status    # Full health check (frpc + DS + relay)
-./ds status        # Just container status
-infra/relay status     # Just relay status
-```
-
-### After Relay IP Change
-```bash
-# 1. Update live_stream.c line 96
-# 2. Update .scripts/frpc/frpc.ini lines 2, 4
-./build.sh
-infra/system restart   # Restart frpc + containers with new config
-```
-
-### Change Inference Model
-```bash
-# Edit live_stream.c line 150 to use different config_infer_*.txt
-sed -i 's|config_infer_yolov8.txt|config_infer_new.txt|' live_stream.c
-./build.sh
-rm models/*.engine
-./ds restart
-```
-
-### Manage TensorRT Engine Cache
-```bash
-# Copy engines from containers to persistent cache (after first build)
-infra/scripts/cache_engine.sh copy
-
-# Verify configs point to cached engines
-infra/scripts/cache_engine.sh verify
-
-# List engines in containers and /models/
-infra/scripts/cache_engine.sh list
-
-# Force rebuild (rarely needed - only if engine corrupted)
-infra/scripts/cache_engine.sh clean
-./ds restart
-infra/scripts/cache_engine.sh copy  # Copy rebuilt engines back to cache
-```
-
-## What NOT to Do
-
-1. **Don't manually edit /etc/mediamtx/config.yml on relay**: Use `relay_infra/scripts/startup.sh` + Terraform
-2. **Don't skip rebuilding after .c changes**: Docker uses cached binary, not your edits
-3. **Don't forget to restart system after config changes**: Use `infra/system restart` to apply new frpc config
-4. **Don't modify working streams when debugging**: If s0 works but s2 doesn't, leave s0 alone

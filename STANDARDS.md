@@ -2,405 +2,429 @@
 
 ## Quick Reference
 
-### Management Scripts
-- **`infra/system`**: Full system (frpc + DeepStream) - `start|stop|restart|status`
-- **`./ds`**: DeepStream containers only - `build|start|stop|restart|status`
-- **`infra/relay`**: Remote relay - `restart|status`
-- **`./build.sh`**: Rebuild Docker images
+### Management Commands
+- **`./build.sh`**: Rebuild ds-single Docker image
+- **`./run.sh`**: Start ds-single container
+- **`docker logs ds-single`**: View container logs
+- **`docker stop ds-single`**: Stop container
+- **`curl http://localhost:5555/stream/status`**: Check status
 
 ### Component Locations
-- **DeepStream source**: `live_stream.c` (single parameterized binary)
-- **FRP config**: `infra/scripts/frpc/frpc.ini`
-- **Inference config**: `config/config_infer_yolov8.txt`
-- **Utilities**: `infra/scripts/check.sh`, `infra/scripts/debug.sh`
+- **Source code**: `config.py`, `pipeline.py`, `main.py`
+- **Inference config**: `config/bowling_yolo12n_batch.txt`
+- **Models**: `models/` (ONNX + TensorRT engines)
 
 ### Quick Commands
 ```bash
-infra/system start      # Start everything (frpc + containers)
-infra/system status     # Health check
-./ds restart        # Restart containers only
-infra/relay status      # Check remote relay
+./build.sh                       # Rebuild image
+./run.sh                        # Start container
+curl http://localhost:5555/stream/status | jq  # Check status
+docker logs ds-single --tail 50  # View logs
 ```
 
-## Architecture Constraints
+## Architecture Standards
 
-### Relay IP Changes
-When the relay IP changes (after terraform destroy/apply), you MUST update these 2 files:
-1. `live_stream.c` (line 96: `snprintf(input_uri, ...)`)
-2. `infra/scripts/frpc/frpc.ini` (line 2: `server_addr`, line 4: `token`)
+### 3-File Python Structure
 
-Then rebuild and restart:
+**config.py** (26 lines):
+- All configuration constants only
+- No logic, no imports except standard library
+- Easy to read and modify
+
+**pipeline.py** (482 lines):
+- All GStreamer code
+- Pipeline creation/destruction
+- Source management
+- All callbacks
+- No Flask, no HTTP logic
+
+**main.py** (103 lines):
+- Flask HTTP API only
+- Lifecycle coordination (0→1 creates pipeline)
+- No GStreamer code
+
+**Separation rules:**
+- Config changes → edit `config.py` only
+- Pipeline changes → edit `pipeline.py` only
+- API changes → edit `main.py` only
+
+## HTTP API Standards
+
+### Endpoints
+
+**POST /stream/restart**:
 ```bash
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"id": 0}' \
+  http://localhost:5555/stream/restart
+```
+- Creates pipeline on first call (id 0)
+- Adds/restarts sources on subsequent calls
+- Returns: `{"status": "ok", "id": N}` or error
+
+**GET /stream/status**:
+```bash
+curl http://localhost:5555/stream/status
+```
+- Returns pipeline status and active streams
+- Shows configured sources vs active streams
+- Indicates if pipeline created or not
+
+## Deployment Workflow
+
+### After Code Changes
+
+```bash
+# 1. Edit Python files
+vim config.py      # Or pipeline.py or main.py
+
+# 2. Rebuild Docker image
 ./build.sh
-infra/system restart    # Restarts frpc + all containers
+
+# 3. Restart container
+./run.sh
+
+# 4. Check logs
+docker logs ds-single --tail 50
 ```
 
-### Relay Configuration (Terraform)
-The relay is **immutable infrastructure**. To change MediaMTX config:
+**Always rebuild after code changes** - Docker uses cached image.
+
+### After Config Changes
+
 ```bash
-cd relay/
-# 1. Edit relay/scripts/startup.sh
-# 2. Destroy and recreate
-export GOOGLE_OAUTH_ACCESS_TOKEN=$(gcloud auth print-access-token)
-terraform destroy -var project_id=fsp-api-1 -auto-approve
-terraform apply -var project_id=fsp-api-1 -auto-approve
-# 3. Get new IP and token
-terraform output external_ip
-terraform output -raw frps_token
-# 4. Update all 3 files with new IP/token
-# 5. Rebuild and restart (see above)
+# 1. Edit inference config
+vim config/bowling_yolo12n_batch.txt
+
+# 2. Update config.py if needed
+vim config.py
+# Update: PGIE_CONFIG_FILE = "/config/new_config.txt"
+
+# 3. Rebuild and restart
+./build.sh
+./run.sh
 ```
 
-### frpc (Local FRP Client)
-**Always restart after config changes**:
+### Changing Models
+
 ```bash
-infra/system restart    # Restarts frpc + all containers together
-```
+# 1. Export ONNX (in training/)
+cp training/runs/train/weights/best.onnx models/new_model.onnx
 
-**Check it worked**:
-```bash
-infra/system status     # Full health check
-# Or check logs manually:
-tail -10 /var/log/frpc.log
-# Should see: "proxy added: [s0_rtsp s1_rtsp s2_rtsp]"
-```
-
-## DeepStream Config Changes
-
-### Editing Source Code
-After editing `live_stream.c`, you MUST rebuild:
-```bash
-./build.sh      # Rebuilds ds-s1:latest with new binary
-./ds restart    # Restart all DeepStream containers
-```
-
-Docker uses cached binaries - your edits won't apply until rebuild.
-
-### Changing Inference Model
-```bash
-# 1. Create new inference config
-cp config/config_infer_yolov8.txt config/config_infer_new.txt
-vim config/config_infer_new.txt
+# 2. Create inference config
+cp config/bowling_yolo12n_batch.txt config/new_model_batch.txt
+vim config/new_model_batch.txt
 # Update: onnx-file=/models/new_model.onnx
 # Update: model-engine-file=/models/new_model_b1_gpu0_fp16.engine
 
-# 2. Edit live_stream.c line 150 to use different config
-sed -i 's|config_infer_yolov8.txt|config_infer_new.txt|' live_stream.c
+# 3. Update config.py
+vim config.py
+# Update: PGIE_CONFIG_FILE = "/config/new_model_batch.txt"
 
-# 3. Rebuild and restart (no engine deletion needed)
+# 4. Rebuild and restart (engine builds automatically)
 ./build.sh
-./ds restart
+./run.sh
 
-# DeepStream auto-builds new engine, old engines remain cached
+# 5. Wait for engine build (3-10 min on first run)
+docker logs ds-single --follow | grep "PLAYING"
+
+# 6. Subsequent restarts use cached engine (instant)
 ```
 
 ## Performance Standards
 
 ### 30 FPS is Sacred
-Maintain these settings in `live_stream.c`:
-- `batched-push-timeout=33333` (nvstreammux, line 159)
-- `iframeinterval=30` (encoder, line 181)
-- `live-source=0` (nvstreammux, line 161)
+
+Maintain these settings in `config.py`:
+- `MUXER_BATCH_TIMEOUT_USEC = 33000` (33ms for 30 FPS)
+- `ENCODER_IDR_INTERVAL = 30` (IDR frame every 30 frames)
 
 ### Batch Size Consistency
-All 3 streams use batch-size=1:
-- nvstreammux: `batch-size=1` (live_stream.c line 158)
-- Inference config: `batch-size=1` (config/config_infer_yolov8.txt line 14)
-- TensorRT engine: Built for batch-size=1
+
+All config locations must match:
+- `config.py`: `MAX_NUM_SOURCES = 36`
+- Inference config: `batch-size=36`
+- TensorRT engine: Built for batch-size=36
 
 Changing batch size requires:
-1. Edit live_stream.c line 158
-2. Edit `config/config_infer_yolov8.txt` line 14
-3. Delete `models/*.engine`
+1. Edit `config.py` MAX_NUM_SOURCES
+2. Edit inference config batch-size
+3. Delete cached `.engine` files
 4. Rebuild and restart
 
 ## TensorRT Engine Management
 
-### Critical Understanding: DeepStream Saves to /app/, NOT /models/
+### How Engine Caching Works
 
-**The Problem**:
-- Config says: `model-engine-file=/models/xxx.engine` (where DeepStream LOADS from)
-- DeepStream saves to: `/app/model_b1_gpu0_fp16.engine` (hardcoded location)
-- `/app/` is ephemeral (lost on restart), `/models/` is bind-mounted (persistent)
-- Without manual intervention, engines rebuild on every container restart
+**DeepStream auto-manages engines:**
+- Config specifies: `model-engine-file=/models/xxx_batch36.engine`
+- First run: Checks `/models/`, not found → builds from ONNX (3-10 min)
+- Saves to: `/models/xxx_batch36.engine` (bind-mounted, persists)
+- Second run: Loads from `/models/xxx_batch36.engine` (instant)
 
-**The Solution**: Use `infra/scripts/cache_engine.sh` to copy engines from `/app/` → `/models/`
+**No manual copying needed** - engines saved directly to bind-mounted `/models/`
 
 ### Standard Operating Procedure: Adding New Model
 
-**ALWAYS follow this sequence**:
+**ALWAYS follow this sequence:**
 
 ```bash
-# 1. Export ONNX using DeepStream-Yolo method (ensures proper output layer)
+# 1. Export ONNX with FIXED dimensions (dynamic=False)
 cd /root/d_final/training
-./scripts/export_deepstream.sh path/to/best.pt 640
-# This uses DeepStream-Yolo's export_yoloV8.py with Ultralytics container
-# Adds DeepStreamOutput layer for compatibility with custom parser
+docker run --rm --gpus all -v $(pwd):/data \
+  ultralytics/ultralytics:latest yolo export \
+  model=/data/runs/train/weights/best.pt \
+  format=onnx imgsz=1280 dynamic=False simplify=True
 
-# 2. Copy ONNX to production models/
-cp training/path/to/best.pt.onnx models/new_model.onnx
+# 2. Copy to production models/
+cp training/runs/train/weights/best.onnx models/new_model.onnx
 
-# 3. Create/update config file
-cp config/config_infer_yolov8.txt config/config_infer_new.txt
-vim config/config_infer_new.txt
+# 3. Create/update inference config
+cp config/bowling_yolo12n_batch.txt config/new_model_batch.txt
+vim config/new_model_batch.txt
 # Update: onnx-file=/models/new_model.onnx
 # Update: model-engine-file=/models/new_model_b1_gpu0_fp16.engine
 # Update: num-detected-classes=X
 # Update: labelfile-path=/models/new_labels.txt
 
-# 4. Update ds script or live_stream.c to use new config
-# For s2: Edit ds script line 22 (config path argument)
-# Or: Edit live_stream.c default config logic
+# 4. Update config.py
+vim config.py
+# Update: PGIE_CONFIG_FILE = "/config/new_model_batch.txt"
 
-# 5. Rebuild Docker image (if live_stream.c changed)
+# 5. Rebuild and restart
 ./build.sh
+./run.sh
 
-# 6. Start containers - engines build in /app/ (3-10 min)
-./ds restart
+# 6. Wait for "Pipeline ready" (3-10 min on first run)
+docker logs ds-single --follow | grep "Pipeline ready"
 
-# 7. Wait for "Pipeline set to PLAYING"
-docker logs ds-s2 --follow | grep "PLAYING"
-# Press Ctrl+C when you see: "Pipeline set to PLAYING"
+# 7. Test first stream
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"id": 0}' \
+  http://localhost:5555/stream/restart
 
-# 8. CRITICAL: Copy engines to persistent cache
-infra/scripts/cache_engine.sh copy
-
-# 9. Verify cache with verify command
-infra/scripts/cache_engine.sh verify
-# Should show ✓ for all configs pointing to existing cached engines
-
-# 10. List engines to confirm cache status
-infra/scripts/cache_engine.sh list
-# Should show engines in both /app/ (containers) and /models/ (host)
-
-# 11. Test cache reuse - restart should be instant (no rebuild)
-./ds restart
-docker logs ds-s2 2>&1 | grep "deserialized trt engine"
-# Should see: "deserialized trt engine from :/models/new_model_b1_gpu0_fp16.engine"
-
-# 12. Verify no rebuild happened
-docker logs ds-s2 2>&1 | grep "Building the TensorRT Engine"
-# Should be EMPTY (no output = good, used cache)
+# 8. Verify cache on second restart (should be instant)
+docker stop ds-single
+./run.sh
+# Should see "deserialized trt engine from :/models/..." in logs
 ```
 
-### cache_engine.sh Commands
+### When to Delete Engines
+
+**ONLY delete engines if:**
+1. **Testing fresh build** - benchmarking build time
+2. **Engine corrupted** - crashes with deserialize errors
+3. **Disk cleanup** - removing old unused engines
+4. **Config changed** - batch size, precision, input size
 
 ```bash
-# Copy engines from /app/ to /models/ with correct names
-infra/scripts/cache_engine.sh copy
+# Delete specific engine
+rm /root/d_final/models/old_model_b1_gpu0_fp16.engine
 
-# List engines in containers + /models/
-infra/scripts/cache_engine.sh list
+# Or delete all engines
+rm /root/d_final/models/*.engine
 
-# Verify configs point to existing cached engines
-infra/scripts/cache_engine.sh verify
-
-# Delete cached engines (force rebuild)
-infra/scripts/cache_engine.sh clean
+# Container will rebuild on next start
+./run.sh
 ```
-
-### When to Run cache_engine.sh copy
-
-**ALWAYS run after**:
-1. First deployment of new model
-2. Any ONNX model change (forces rebuild)
-3. Moving to different GPU (different CUDA compute capability)
-4. Config changes that affect engine (batch size, precision, etc.)
-
-**Skip if**:
-- Just restarting containers with existing cached engines
-- No model or config changes
 
 ### How to Verify Caching Works
 
 **Good (using cache)**:
 ```bash
-docker logs ds-s2 2>&1 | grep -i engine | head -5
+docker logs ds-single 2>&1 | grep -i "deserialized trt engine"
 ```
 Output should show:
 ```
 deserialized trt engine from :/models/xxx_b1_gpu0_fp16.engine
 Use deserialized engine model: /models/xxx_b1_gpu0_fp16.engine
 ```
-Time to PLAYING: <10 seconds
+Time to "Pipeline ready": <10 seconds
 
 **Bad (rebuilding)**:
+```bash
+docker logs ds-single 2>&1 | grep -i "building"
+```
+Output shows:
 ```
 deserialize engine from file :/models/xxx.engine failed
 Building the TensorRT Engine
 ```
-Time to PLAYING: 3-10 minutes
-
-### Only Delete Engines If
-
-1. **Testing fresh build** - benchmarking build time
-2. **Engine corrupted** - crashes with deserialize errors
-3. **Disk cleanup** - removing old unused engines
-
-```bash
-# Delete all cached engines
-infra/scripts/cache_engine.sh clean
-
-# Or delete specific engine
-rm /root/d_final/models/old_model_b1_gpu0_fp16.engine
-```
-
-After deletion, containers will rebuild engines in `/app/` on next start. **Remember to run `infra/scripts/cache_engine.sh copy` after rebuild!**
+Time to "Pipeline ready": 3-10 minutes
 
 ## Debugging Workflow
 
 ### Quick Health Check
 ```bash
-infra/system status    # Full system health check
-infra/scripts/debug.sh # Detailed diagnostics
+# 1. Check container status
+docker ps | grep ds-single
+
+# 2. Check API status
+curl http://localhost:5555/stream/status | jq
+
+# 3. Check logs
+docker logs ds-single --tail 50
+
+# 4. Check for errors
+docker logs ds-single 2>&1 | grep -i error
 ```
 
 ### Stream Not Working
 ```bash
 # 1. Check container is running
-./ds status
+docker ps | grep ds-single
 
-# 2. Check container logs
-docker logs ds-s0 --tail 50
+# 2. Check if pipeline created
+curl http://localhost:5555/stream/status | jq .pipeline
 
-# 3. Check frpc tunnel
-tail -20 /var/log/frpc.log
+# 3. Try restarting stream
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"id": 0}' \
+  http://localhost:5555/stream/restart
 
-# 4. Check relay
-infra/relay status
+# 4. Check detailed logs
+docker logs ds-single --follow
 ```
 
-### Don't Modify Working Streams
-If s0 and s1 work but s2 doesn't:
-- **DO**: Debug s2
-- **DON'T**: Change s0 or s1
+### Pipeline Won't Start
+```bash
+# 1. Check for engine build errors
+docker logs ds-single 2>&1 | grep -i "error\|fail"
 
-They have identical architecture (same binary, different stream ID). If one works, the others should too.
+# 2. Check ONNX file exists
+docker exec ds-single ls -lh /models/*.onnx
+
+# 3. Check config file exists
+docker exec ds-single ls -lh /config/*.txt
+
+# 4. Try fresh restart
+docker stop ds-single
+./run.sh
+```
 
 ## Git Practices
 
 ### Committing Changes
+
 ```bash
-# After relay IP change, commit all updated files
-git add live_stream.c .scripts/frpc/frpc.ini
-git commit -m "config: update relay IP to $(cd relay && terraform output -raw external_ip)"
+# After code changes
+git add config.py pipeline.py main.py
+git commit -m "refactor: description of changes"
+
+# After config changes
+git add config/bowling_yolo12n_batch.txt
+git commit -m "config: update model parameters"
+
+# After model changes
+git add models/new_model.onnx models/new_labels.txt
+git commit -m "feat: add new model"
 ```
 
 ### What to Commit
-- **DO commit**: Config files, source code (.c), docs
-- **DON'T commit**: TensorRT .engine files (machine-specific)
+- **DO commit**: Python source, configs, ONNX models, labels
+- **DON'T commit**: TensorRT `.engine` files (machine-specific)
 
 ### .gitignore
 ```
 models/*.engine
 *.pyc
 __pycache__/
+training/runs/
+training/datasets/
 .terraform/
 terraform.tfstate*
 ```
 
 ## Viewing Streams
 
-### Processed Streams (After YOLOv8)
-- s0: http://34.47.221.242:8889/s0/
-- s1: http://34.47.221.242:8889/s1/
-- s2: http://34.47.221.242:8889/s2/
-
-### Input Streams (Before Processing)
-- in_s0: http://34.47.221.242:8889/in_s0/
-- in_s1: http://34.47.221.242:8889/in_s1/
-- in_s2: http://34.47.221.242:8889/in_s2/
-
-### Local RTSP (For Testing)
+### RTSP Streams (Local)
 ```bash
-ffplay rtsp://127.0.0.1:8554/ds-test  # s0
-ffplay rtsp://127.0.0.1:8555/ds-test  # s1
-ffplay rtsp://127.0.0.1:8556/ds-test  # s2
+# View processed stream locally
+ffplay rtsp://127.0.0.1:9600/x0
+ffplay rtsp://127.0.0.1:9600/x1
+ffplay rtsp://127.0.0.1:9600/x2
 ```
+
+### Via Relay (if configured)
+- Processed streams: `http://RELAY_IP:8889/s0/`, `s1/`, `s2/`
+- Input streams: `http://RELAY_IP:8889/in_s0/`, `in_s1/`, `in_s2/`
 
 ## Performance Monitoring
 
 ### Check FPS
 ```bash
-docker logs ds-s0 | grep "**PERF"
-docker logs ds-s1 | grep "**PERF"
-docker logs ds-s2 | grep "**PERF"
+docker logs ds-single | grep "**PERF"
+# Should see ~30 FPS steady-state
 ```
-
-Should see ~30 FPS steady-state.
 
 ### Check GPU Usage
 ```bash
 nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv
+# Each active stream: ~390 MiB GPU memory
 ```
-
-Each container uses ~390 MiB GPU memory.
 
 ### Check CPU Usage
 ```bash
-docker stats --no-stream
+docker stats --no-stream ds-single
+# Should be 4-5% CPU per stream at 30 FPS
 ```
-
-Each container should use 4-5% CPU at 30 FPS.
 
 ## Common Issues
 
-### "Resetting source" Loop
-**Cause**: Container can't pull from relay (wrong IP, relay down, network issue)
-**Fix**: Check relay IP in live_stream.c line 97, verify relay is running
-
-### "Connection refused" on 9500-9502
-**Cause**: frpc not running or not connected
-**Fix**: Restart frpc and check logs
-
-### Stream Works in in_sX But Not sX
-**Cause**: frpc tunnel not working or relay can't pull from tunnel
-**Fix**:
-1. Verify frpc logs show "proxy added"
-2. Check relay logs for "ready: 1 track"
-3. Restart ds-sX container if stuck
-
-### Changes to live_stream.c Don't Apply
+### Changes Don't Apply After Edit
 **Cause**: Forgot to rebuild Docker image
-**Fix**: `./build.sh` before `./start.sh`
+**Fix**: `./build.sh` before `./run.sh`
 
-### TensorRT Build Hangs/Fails
-**Cause**: Multiple containers trying to build same engine file simultaneously
-**Fix**: Stop all containers, let one build first, then restart all
+### Pipeline Won't Create
+**Cause**: Error in Python code or missing dependencies
+**Fix**: Check logs with `docker logs ds-single --tail 100`
 
-### FFmpeg Publishing Works But DeepStream Crashes with "NvBufSurfTransform failed"
-**Cause**: iPhone HDR video (Dolby Vision, bt2020 color space) incompatible with DeepStream
-**Symptoms**:
-- Pipeline sets to PLAYING, receives pad, links succeed
-- Then crashes with: `nvbufsurftransform.cpp:4253: => Transformation Failed -1`
-- No output, no PERF stats, container exits
-- Works perfectly with Larix but not FFmpeg from iPhone video file
+### Stream Stuck "Resetting source"
+**Cause**: Can't pull from relay (wrong IP, relay down, network issue)
+**Fix**: Check source URI in Dockerfile CMD, verify relay is running
 
-**Fix**: Convert iPhone HDR video to SDR (bt709) before streaming:
+### TensorRT Build Fails
+**Cause**: Invalid ONNX, wrong precision, or insufficient GPU memory
+**Fix**:
+1. Verify ONNX with `onnxsim models/xxx.onnx models/xxx_simplified.onnx`
+2. Check GPU memory with `nvidia-smi`
+3. Try reducing batch size
 
+### Container Won't Start
+**Cause**: Port conflict or volume mount issue
+**Fix**:
+1. Check if port 5555 or 9600 in use: `netstat -tlnp | grep -E "5555|9600"`
+2. Verify volume mounts exist: `ls -l /root/d_final/config/ /root/d_final/models/`
+
+## Code Style
+
+### Python
+- Use f-strings for formatting (not % or .format())
+- Keep functions focused (one responsibility)
+- Document with docstrings
+- No global state outside module globals
+
+### Config Files
+- Use consistent naming: `model_name_resolution_batch.txt`
+- Always specify full paths (`/models/`, `/config/`)
+- Keep batch-size consistent with config.py
+
+### Logging
+- Use `print()` for normal flow (captured by Docker logs)
+- Use `sys.stderr.write()` for errors
+- Include context in messages: `print(f"✓ Created source {source_id}")`
+
+## Helper Scripts (Optional)
+
+If `infra/restart_stream.sh` exists:
 ```bash
-# Step 1: Convert iPhone video to clean SDR file (one-time, slow but high quality)
-ffmpeg -i your_iphone_video.MOV \
-  -vf "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,format=yuv420p,fps=30,scale=1920:1080" \
-  -colorspace bt709 -color_primaries bt709 -color_trc bt709 \
-  -c:v libx264 -profile:v baseline -bf 0 -g 30 -preset slow \
-  -c:a aac -b:a 128k -ar 48000 \
-  -movflags +faststart \
-  clean_video.mp4
-
-# Step 2: Stream the clean file (fast, zero re-encoding)
-ffmpeg -re -stream_loop -1 -i clean_video.mp4 \
-  -c copy \
-  -f rtsp -rtsp_transport tcp \
-  rtsp://34.47.221.242:8554/in_s0
+./infra/restart_stream.sh 0  # Restart stream 0
+./infra/restart_stream.sh 1  # Restart stream 1
 ```
 
-**Why this happens**:
-- iPhone 15 Pro Max (and similar) record in Dolby Vision HDR
-- Source video is 10-bit yuv420p10le with bt2020 color space
-- DeepStream expects 8-bit SDR (bt709) video
-- NvBufSurfTransform can't convert bt2020 → NV12 for inference
-- The conversion must happen in FFmpeg, not in DeepStream
-
-**Larix works because**: Mobile apps encode to baseline H264 with bt709 (standard SDR) by default
-
+Otherwise use curl directly:
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"id": 0}' \
+  http://localhost:5555/stream/restart
+```
