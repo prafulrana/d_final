@@ -7,21 +7,25 @@ d_final/
 ├── STANDARDS.md                 # Coding/config standards
 ├── STRUCTURE.md                 # This file
 │
-├── system                       # Full system manager (frpc + DeepStream)
-├── ds                          # DeepStream containers only (start/stop/status)
-├── relay                       # Remote relay manager (restart/status)
+├── infra/                      # Infrastructure management
+│   ├── system                  # Full system manager (frpc + DeepStream)
+│   ├── relay                   # Remote relay manager (restart/status)
+│   ├── restart_stream.sh       # Stream restart utility
+│   └── scripts/
+│       ├── cache_engine.sh     # TensorRT engine cache manager
+│       ├── check.sh            # Health check validation
+│       ├── debug.sh            # Debugging diagnostics
+│       └── frpc/
+│           └── frpc.ini        # FRP client config (CONTAINS RELAY IP + TOKEN)
+│
 ├── build.sh                    # Docker image builder
+├── run.sh                      # Run ds-single container
 │
-├── live_stream.c               # DRY C binary (takes stream ID 0-3, orientation, config)
-├── Dockerfile.s1               # Builds ds-s1:latest with live_stream binary
+├── main.py                     # Python DeepStream application (batch inference)
+├── bus_call.py                 # Bus callback utility
+├── Dockerfile                  # Builds ds-single:latest
 ├── libnvdsinfer_custom_impl_Yolo.so  # YOLOv8 custom parser library
-│
-├── .scripts/                   # Hidden utilities
-│   ├── cache_engine.sh        # TensorRT engine cache manager
-│   ├── check.sh               # Health check validation
-│   ├── debug.sh               # Debugging diagnostics
-│   └── frpc/
-│       └── frpc.ini           # FRP client config (CONTAINS RELAY IP + TOKEN)
+├── config_tracker_NvDCF_perf.yml    # Tracker config
 │
 ├── config/
 │   ├── config_infer_yolov8.txt    # YOLOv8n COCO (s0-s2, 80 classes)
@@ -87,13 +91,13 @@ training/
 ### Management Scripts (Root Level)
 - **system**: Full system management (start/stop/restart/status)
   - Manages frpc tunnel + DeepStream containers together
-  - Use `./system start` to start frpc and all DS containers
-  - Use `./system status` to check frpc, DS containers, and relay health
+  - Use `infra/system start` to start frpc and all DS containers
+  - Use `infra/system status` to check frpc, DS containers, and relay health
 - **ds**: DeepStream containers only (build/start/stop/restart/status)
   - Use `./ds start` to start containers without touching frpc
 - **relay**: Remote relay management (restart/status)
   - SSHs to relay VM and manages frps + mediamtx containers
-  - Use `./relay status` to check relay health
+  - Use `infra/relay status` to check relay health
 
 ### Live Stream (Parameterized C Binary)
 - **live_stream.c**: Single binary, takes stream ID (0, 1, 2) as argv[1]
@@ -110,12 +114,12 @@ training/
 
 ### Configuration Files
 - **config/config_infer_yolov8.txt**: YOLOv8n detector (80 COCO classes)
-- **.scripts/frpc/frpc.ini**: FRP client settings (**CONTAINS RELAY IP AND TOKEN**)
+- **infra/scripts/frpc/frpc.ini**: FRP client settings (**CONTAINS RELAY IP AND TOKEN**)
 
 ### Utilities (Hidden in .scripts/)
-- **.scripts/cache_engine.sh**: TensorRT engine cache manager (copy/list/clean)
-- **.scripts/check.sh**: Health check validation (used by `./system status`)
-- **.scripts/debug.sh**: Debugging diagnostics (check container logs, RTSP servers, etc.)
+- **infra/scripts/cache_engine.sh**: TensorRT engine cache manager (copy/list/clean)
+- **infra/scripts/check.sh**: Health check validation (used by `infra/system status`)
+- **infra/scripts/debug.sh**: Debugging diagnostics (check container logs, RTSP servers, etc.)
 
 ### Relay Infrastructure
 - **relay/main.tf**: Terraform config for GCP VM
@@ -160,7 +164,7 @@ Bowling → in_s3 (relay) → ds-s3 (Bowling YOLOv8) → localhost:8557 → frpc
 
 ### Stop Everything
 ```bash
-./system stop      # Stop all containers + frpc
+infra/system stop      # Stop all containers + frpc
 ```
 
 ### DeepStream Only (without frpc)
@@ -174,9 +178,9 @@ Bowling → in_s3 (relay) → ds-s3 (Bowling YOLOv8) → localhost:8557 → frpc
 
 ### Check System Health
 ```bash
-./system status    # Full health check (frpc + DS + relay)
+infra/system status    # Full health check (frpc + DS + relay)
 ./ds status        # Just container status
-./relay status     # Just relay status
+infra/relay status     # Just relay status
 ```
 
 ### After Relay IP Change
@@ -184,7 +188,7 @@ Bowling → in_s3 (relay) → ds-s3 (Bowling YOLOv8) → localhost:8557 → frpc
 # 1. Update live_stream.c line 96
 # 2. Update .scripts/frpc/frpc.ini lines 2, 4
 ./build.sh
-./system restart   # Restart frpc + containers with new config
+infra/system restart   # Restart frpc + containers with new config
 ```
 
 ### Change Inference Model
@@ -199,23 +203,23 @@ rm models/*.engine
 ### Manage TensorRT Engine Cache
 ```bash
 # Copy engines from containers to persistent cache (after first build)
-./.scripts/cache_engine.sh copy
+infra/scripts/cache_engine.sh copy
 
 # Verify configs point to cached engines
-./.scripts/cache_engine.sh verify
+infra/scripts/cache_engine.sh verify
 
 # List engines in containers and /models/
-./.scripts/cache_engine.sh list
+infra/scripts/cache_engine.sh list
 
 # Force rebuild (rarely needed - only if engine corrupted)
-./.scripts/cache_engine.sh clean
+infra/scripts/cache_engine.sh clean
 ./ds restart
-./.scripts/cache_engine.sh copy  # Copy rebuilt engines back to cache
+infra/scripts/cache_engine.sh copy  # Copy rebuilt engines back to cache
 ```
 
 ## What NOT to Do
 
 1. **Don't manually edit /etc/mediamtx/config.yml on relay**: Use `relay_infra/scripts/startup.sh` + Terraform
 2. **Don't skip rebuilding after .c changes**: Docker uses cached binary, not your edits
-3. **Don't forget to restart system after config changes**: Use `./system restart` to apply new frpc config
+3. **Don't forget to restart system after config changes**: Use `infra/system restart` to apply new frpc config
 4. **Don't modify working streams when debugging**: If s0 works but s2 doesn't, leave s0 alone

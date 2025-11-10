@@ -3,23 +3,23 @@
 ## Quick Reference
 
 ### Management Scripts
-- **`./system`**: Full system (frpc + DeepStream) - `start|stop|restart|status`
+- **`infra/system`**: Full system (frpc + DeepStream) - `start|stop|restart|status`
 - **`./ds`**: DeepStream containers only - `build|start|stop|restart|status`
-- **`./relay`**: Remote relay - `restart|status`
+- **`infra/relay`**: Remote relay - `restart|status`
 - **`./build.sh`**: Rebuild Docker images
 
 ### Component Locations
 - **DeepStream source**: `live_stream.c` (single parameterized binary)
-- **FRP config**: `.scripts/frpc/frpc.ini`
+- **FRP config**: `infra/scripts/frpc/frpc.ini`
 - **Inference config**: `config/config_infer_yolov8.txt`
-- **Utilities**: `.scripts/check.sh`, `.scripts/debug.sh`
+- **Utilities**: `infra/scripts/check.sh`, `infra/scripts/debug.sh`
 
 ### Quick Commands
 ```bash
-./system start      # Start everything (frpc + containers)
-./system status     # Health check
+infra/system start      # Start everything (frpc + containers)
+infra/system status     # Health check
 ./ds restart        # Restart containers only
-./relay status      # Check remote relay
+infra/relay status      # Check remote relay
 ```
 
 ## Architecture Constraints
@@ -27,12 +27,12 @@
 ### Relay IP Changes
 When the relay IP changes (after terraform destroy/apply), you MUST update these 2 files:
 1. `live_stream.c` (line 96: `snprintf(input_uri, ...)`)
-2. `.scripts/frpc/frpc.ini` (line 2: `server_addr`, line 4: `token`)
+2. `infra/scripts/frpc/frpc.ini` (line 2: `server_addr`, line 4: `token`)
 
 Then rebuild and restart:
 ```bash
 ./build.sh
-./system restart    # Restarts frpc + all containers
+infra/system restart    # Restarts frpc + all containers
 ```
 
 ### Relay Configuration (Terraform)
@@ -54,12 +54,12 @@ terraform output -raw frps_token
 ### frpc (Local FRP Client)
 **Always restart after config changes**:
 ```bash
-./system restart    # Restarts frpc + all containers together
+infra/system restart    # Restarts frpc + all containers together
 ```
 
 **Check it worked**:
 ```bash
-./system status     # Full health check
+infra/system status     # Full health check
 # Or check logs manually:
 tail -10 /var/log/frpc.log
 # Should see: "proxy added: [s0_rtsp s1_rtsp s2_rtsp]"
@@ -124,7 +124,7 @@ Changing batch size requires:
 - `/app/` is ephemeral (lost on restart), `/models/` is bind-mounted (persistent)
 - Without manual intervention, engines rebuild on every container restart
 
-**The Solution**: Use `.scripts/cache_engine.sh` to copy engines from `/app/` → `/models/`
+**The Solution**: Use `infra/scripts/cache_engine.sh` to copy engines from `/app/` → `/models/`
 
 ### Standard Operating Procedure: Adding New Model
 
@@ -163,14 +163,14 @@ docker logs ds-s2 --follow | grep "PLAYING"
 # Press Ctrl+C when you see: "Pipeline set to PLAYING"
 
 # 8. CRITICAL: Copy engines to persistent cache
-./.scripts/cache_engine.sh copy
+infra/scripts/cache_engine.sh copy
 
 # 9. Verify cache with verify command
-./.scripts/cache_engine.sh verify
+infra/scripts/cache_engine.sh verify
 # Should show ✓ for all configs pointing to existing cached engines
 
 # 10. List engines to confirm cache status
-./.scripts/cache_engine.sh list
+infra/scripts/cache_engine.sh list
 # Should show engines in both /app/ (containers) and /models/ (host)
 
 # 11. Test cache reuse - restart should be instant (no rebuild)
@@ -187,16 +187,16 @@ docker logs ds-s2 2>&1 | grep "Building the TensorRT Engine"
 
 ```bash
 # Copy engines from /app/ to /models/ with correct names
-./.scripts/cache_engine.sh copy
+infra/scripts/cache_engine.sh copy
 
 # List engines in containers + /models/
-./.scripts/cache_engine.sh list
+infra/scripts/cache_engine.sh list
 
 # Verify configs point to existing cached engines
-./.scripts/cache_engine.sh verify
+infra/scripts/cache_engine.sh verify
 
 # Delete cached engines (force rebuild)
-./.scripts/cache_engine.sh clean
+infra/scripts/cache_engine.sh clean
 ```
 
 ### When to Run cache_engine.sh copy
@@ -239,20 +239,20 @@ Time to PLAYING: 3-10 minutes
 
 ```bash
 # Delete all cached engines
-./.scripts/cache_engine.sh clean
+infra/scripts/cache_engine.sh clean
 
 # Or delete specific engine
 rm /root/d_final/models/old_model_b1_gpu0_fp16.engine
 ```
 
-After deletion, containers will rebuild engines in `/app/` on next start. **Remember to run `./.scripts/cache_engine.sh copy` after rebuild!**
+After deletion, containers will rebuild engines in `/app/` on next start. **Remember to run `infra/scripts/cache_engine.sh copy` after rebuild!**
 
 ## Debugging Workflow
 
 ### Quick Health Check
 ```bash
-./system status    # Full system health check
-./.scripts/debug.sh # Detailed diagnostics
+infra/system status    # Full system health check
+infra/scripts/debug.sh # Detailed diagnostics
 ```
 
 ### Stream Not Working
@@ -267,7 +267,7 @@ docker logs ds-s0 --tail 50
 tail -20 /var/log/frpc.log
 
 # 4. Check relay
-./relay status
+infra/relay status
 ```
 
 ### Don't Modify Working Streams

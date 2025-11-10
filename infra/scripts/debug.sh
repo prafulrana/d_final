@@ -47,7 +47,7 @@ echo ""
 
 # Relay Status
 echo "[Relay (in_s2 input)]"
-./relay status 2>&1 | grep -E "in_s2|ready" | tail -5 | sed 's/^/  /' || echo "  (relay check failed)"
+/root/d_final/infra/relay status 2>&1 | grep -E "in_s2|ready" | tail -5 | sed 's/^/  /' || echo "  (relay check failed)"
 echo ""
 
 # Container logs

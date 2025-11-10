@@ -1,7 +1,7 @@
 #!/bin/bash
 # Full system (frpc + DeepStream ds-single)
 
-FRPC_CONFIG="/root/d_final/.scripts/frpc/frpc.ini"
+FRPC_CONFIG="/root/d_final/infra/scripts/frpc/frpc.ini"
 FRPC_LOG="/var/log/frpc.log"
 
 frpc_start() {
@@ -34,7 +34,7 @@ frpc_stop() {
 }
 
 ds_start() {
-    ./run.sh
+    /root/d_final/run.sh
 }
 
 ds_stop() {
@@ -67,7 +67,7 @@ case "$1" in
         docker ps --filter "name=ds-single" --format "table {{.Names}}\t{{.Status}}"
         echo ""
         echo "=== MediaMTX Relay Status ==="
-        ./relay status
+        /root/d_final/infra/relay status
         ;;
     *)
         echo "Usage: $0 {start|stop|restart|status}"
