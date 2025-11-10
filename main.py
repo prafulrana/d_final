@@ -72,6 +72,13 @@ def decodebin_child_added(child_proxy,Object,name,user_data):
         Object.connect("child-added",decodebin_child_added,user_data)
     if(name.find("nvv4l2decoder") != -1):
         Object.set_property("gpu_id", GPU_ID)
+    if name.find("source") != -1:
+        try:
+            # Force TCP protocol for RTSP to avoid 5s UDP timeout
+            Object.set_property("protocols", 0x00000004)  # GST_RTSP_LOWER_TRANS_TCP
+            print(f"✓ Set {name} to TCP-only")
+        except Exception as e:
+            pass
 
 
 def cb_newpad(decodebin,pad,data):
@@ -364,7 +371,7 @@ def add_sources(data):
 
 def restart_source(source_id):
     """Restart a source by stopping and recreating it and its output bin"""
-    global g_source_uris, g_source_enabled, g_source_bin_list, g_output_bins, g_rtsp_servers, pipeline
+    global g_source_uris, g_source_enabled, g_source_bin_list, g_output_bins, g_rtsp_servers, pipeline, g_num_sources
 
     if source_id < 0 or source_id >= MAX_NUM_SOURCES:
         print(f"Invalid source_id {source_id}")
@@ -397,6 +404,12 @@ def restart_source(source_id):
     state_return = source_bin.set_state(Gst.State.PLAYING)
     if state_return == Gst.StateChangeReturn.ASYNC:
         source_bin.get_state(Gst.CLOCK_TIME_NONE)
+
+    # Mark source as enabled and increment count if new source
+    if not g_source_enabled[source_id]:
+        g_source_enabled[source_id] = True
+        g_num_sources += 1
+        print(f"✓ Enabled source {source_id}, g_num_sources now {g_num_sources}")
 
     # Relink output bin (keep elements alive, just reconnect demux pad)
     if g_output_bins[source_id] and g_output_bins[source_id].get("elements"):
@@ -517,7 +530,7 @@ def main(args):
         sys.stderr.write("usage: %s <uri1> [uri2] [uri3] ... \n" % args[0])
         sys.exit(1)
 
-    num_sources=len(args)-1
+    total_sources=len(args)-1  # Total URIs provided for restart API
 
     # Standard GStreamer initialization
     Gst.init(None)
@@ -543,21 +556,27 @@ def main(args):
 
     pipeline.add(streammux)
     streammux.set_property("live-source", 1)
-    uri = args[1]
-    for i in range(num_sources):
-        print("Creating source_bin ",i," \n ")
-        uri_name=args[i+1]
-        if uri_name.find("rtsp://") == 0 :
-            is_live = True
-        #Create first source bin and add to pipeline
-        source_bin=create_uridecode_bin(i, uri_name)
-        if not source_bin:
-            sys.stderr.write("Failed to create source bin. Exiting. \n")
-            sys.exit(1)
-        g_source_bin_list[i] = source_bin
-        pipeline.add(source_bin)
 
-    g_num_sources = num_sources
+    # Store all URIs for restart API
+    for i in range(total_sources):
+        uri_name = args[i+1]
+        g_source_uris[i] = uri_name
+        if uri_name.find("rtsp://") == 0:
+            is_live = True
+
+    # Create only first source at startup
+    print("Creating source_bin 0 \n ")
+    uri_name = args[1]
+    source_bin = create_uridecode_bin(0, uri_name)
+    if not source_bin:
+        sys.stderr.write("Failed to create source bin 0. Exiting. \n")
+        sys.exit(1)
+    g_source_bin_list[0] = source_bin
+    pipeline.add(source_bin)
+
+    # Set active source count to 1 (only source 0 created at startup)
+    num_sources = 1
+    g_num_sources = 1
 
     print("Creating Pgie \n ")
     pgie = Gst.ElementFactory.make("nvinfer", "primary-inference")
@@ -607,7 +626,7 @@ def main(args):
     # Create RTSP factories for all sources ONCE (never touched again, like tiled version)
     print("Creating RTSP factories...\n")
     mounts = rtsp_server.get_mount_points()
-    for i in range(num_sources):
+    for i in range(total_sources):
         path = f"/x{i}"
         factory = GstRtspServer.RTSPMediaFactory.new()
         launch_str = f"( udpsrc name=pay0 port={5001 + i} buffer-size=524288 caps=\"application/x-rtp, media=video, clock-rate=90000, encoding-name=H264, payload=96\" )"
@@ -617,14 +636,13 @@ def main(args):
         print(f"✓ RTSP factory created at {path} (listening on UDP {5001 + i})")
     print()
 
-    # Create output bins for each source
-    print("Creating output bins for each source...\n")
-    for i in range(num_sources):
-        output_bin = create_output_bin(i)
-        if not output_bin:
-            sys.stderr.write(f"Failed to create output bin for source {i}. Exiting.\n")
-            sys.exit(1)
-        g_output_bins[i] = output_bin
+    # Create output bin for first source (others created on-demand via restart API)
+    print("Creating output bin for source 0...\n")
+    output_bin = create_output_bin(0)
+    if not output_bin:
+        sys.stderr.write("Failed to create output bin for source 0. Exiting.\n")
+        sys.exit(1)
+    g_output_bins[0] = output_bin
 
     # Start Flask in separate thread
     print("Starting HTTP control server on port 5555...")
