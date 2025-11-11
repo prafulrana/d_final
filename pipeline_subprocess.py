@@ -3,6 +3,7 @@
 
 import sys
 import time
+import subprocess
 import multiprocessing
 import gi
 gi.require_version('Gst', '1.0')
@@ -18,6 +19,7 @@ g_source_enabled = [False] * MAX_NUM_SOURCES
 g_source_bin_list = [None] * MAX_NUM_SOURCES
 g_output_bins = [None] * MAX_NUM_SOURCES
 g_relay_host = None
+g_bin_counter = [0] * MAX_NUM_SOURCES  # Track bin creation attempts per source for unique naming
 
 # Pipeline elements
 loop = None
@@ -35,6 +37,26 @@ response_queue = None
 def get_source_uri(source_id):
     """Generate RTSP input URI from relay host and source ID"""
     return f"rtsp://{g_relay_host}:8554/in_s{source_id}"
+
+
+def probe_rtsp_source(uri, timeout_sec=3):
+    """Check if RTSP source is accessible before adding to pipeline"""
+    cmd = ["timeout", str(timeout_sec), "gst-launch-1.0",
+           "rtspsrc", f"location={uri}", "protocols=tcp", "!", "fakesink"]
+
+    print(f"[PROBE] Checking if {uri} is accessible...")
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=timeout_sec+1)
+        # Exit code 0 = success, 124 = timeout (but connected successfully)
+        accessible = result.returncode in [0, 124]
+        if accessible:
+            print(f"[PROBE] ✓ Source is accessible")
+        else:
+            print(f"[PROBE] ✗ Source not accessible (exit code: {result.returncode})")
+        return accessible
+    except Exception as e:
+        print(f"[PROBE] ✗ Failed to probe source: {e}")
+        return False
 
 
 def decodebin_child_added(child_proxy, Object, name, user_data):
@@ -74,12 +96,14 @@ def cb_newpad(decodebin, pad, source_id):
 
 def create_uridecode_bin(index):
     """Create uridecodebin for a given source"""
-    global g_source_enabled
+    global g_source_enabled, g_bin_counter
 
     uri = get_source_uri(index)
     print(f"Creating uridecodebin for [{uri}]")
 
-    bin_name = f"source-bin-{index:02d}"
+    # Use unique name for each creation attempt to avoid GStreamer caching issues
+    bin_name = f"source-bin-{index:02d}-{g_bin_counter[index]}"
+    g_bin_counter[index] += 1
     bin = Gst.ElementFactory.make("uridecodebin", bin_name)
     if not bin:
         sys.stderr.write(f"Unable to create uri decode bin {bin_name}\n")
@@ -170,10 +194,37 @@ def stop_release_source(source_id):
 
     if state_return != Gst.StateChangeReturn.FAILURE:
         pad_name = f"sink_{source_id}"
+
+        # Try get_static_pad first (for linked pads)
         sinkpad = streammux.get_static_pad(pad_name)
+
+        # If not found, iterate through request pads to find it
+        if not sinkpad:
+            it = streammux.iterate_pads()
+            while True:
+                result, pad = it.next()
+                if result != Gst.IteratorResult.OK:
+                    break
+                if pad and pad.get_name() == pad_name:
+                    sinkpad = pad
+                    break
+
         if sinkpad:
             sinkpad.send_event(Gst.Event.new_flush_stop(False))
             streammux.release_request_pad(sinkpad)
+            print(f"Released streammux pad {pad_name}")
+        else:
+            print(f"Warning: Could not find pad {pad_name} to release")
+
+        # Flush source bin before removal to clear internal state
+        srcpad = g_source_bin_list[source_id].get_static_pad("src")
+        if srcpad:
+            srcpad.send_event(Gst.Event.new_eos())
+            print(f"Sent EOS to source {source_id} to flush internal state")
+            time.sleep(0.1)  # Brief wait for EOS to propagate
+
+        # Ensure NULL state before removal
+        g_source_bin_list[source_id].set_state(Gst.State.NULL)
 
         pipeline.remove(g_source_bin_list[source_id])
         g_source_bin_list[source_id] = None
@@ -196,18 +247,6 @@ def stop_release_source(source_id):
         except Exception as e:
             print(f"Warning during pad cleanup: {e}")
 
-        # Clean up output bin elements
-        try:
-            if g_output_bins[source_id].get("elements"):
-                for elem in g_output_bins[source_id]["elements"]:
-                    elem.set_state(Gst.State.NULL)
-                    pipeline.remove(elem)
-        except Exception as e:
-            print(f"Warning during output bin cleanup: {e}")
-
-        # Clear output bin reference
-        g_output_bins[source_id] = None
-
     # Clear EOS flag
     g_eos_list[source_id] = False
 
@@ -222,6 +261,11 @@ def restart_source(source_id):
 
     uri = get_source_uri(source_id)
     print(f"Restarting source {source_id}: {uri}")
+
+    # Probe source before touching pipeline to prevent 404 corruption
+    if not probe_rtsp_source(uri):
+        print(f"✗ Cannot add source {source_id}: RTSP stream not available at {uri}")
+        return False
 
     if g_source_enabled[source_id]:
         stop_release_source(source_id)
@@ -315,6 +359,49 @@ def bus_call(bus, message, user_data):
     elif t == Gst.MessageType.ERROR:
         err, debug = message.parse_error()
         sys.stderr.write(f"Error: {err}: {debug}\n")
+
+        # Cleanup source immediately if error came from a source bin
+        src = message.src
+        if src:
+            # Walk up parent hierarchy to find source bin (error usually from child like rtspsrc)
+            element = src
+            while element:
+                element_name = element.get_name()
+                if element_name and "source-bin-" in element_name:
+                    try:
+                        # Extract source ID from "source-bin-XX-Y"
+                        parts = element_name.split("-")
+                        if len(parts) >= 3:
+                            source_id = int(parts[2])
+
+                            # Fatal error during linking (e.g., stream stopped between probe and link)
+                            # This corrupts the pipeline, must hard reset
+                            if "Not Found" in str(err) or "404" in str(err):
+                                print(f"\n{'='*70}")
+                                print(f"[FATAL] 404 error on source {source_id} during linking!")
+                                print(f"Pipeline is corrupted. Call POST /stream/hard_reset to recover.")
+                                print(f"{'='*70}\n")
+                                # Send fatal error event to main process
+                                response_queue.put({
+                                    "event": "FATAL_ERROR",
+                                    "source_id": source_id,
+                                    "error": "404_during_link",
+                                    "message": "Pipeline corrupted by 404 during linking. Hard reset required."
+                                })
+                            else:
+                                print(f"[ERROR] Source {source_id} failed (from {element_name}), cleaning up...")
+                                # Schedule cleanup for non-fatal errors
+                                GLib.idle_add(lambda sid=source_id: (stop_release_source(sid), False)[1])
+                        break
+                    except (ValueError, IndexError) as e:
+                        print(f"[ERROR] Could not parse source ID from {element_name}: {e}")
+                        break
+
+                # Walk up to parent
+                element = element.get_parent()
+                if isinstance(element, Gst.Pipeline):
+                    # Reached pipeline level without finding source bin
+                    break
     elif t == Gst.MessageType.ELEMENT:
         struct = message.get_structure()
         if struct is not None and struct.has_name("stream-eos"):

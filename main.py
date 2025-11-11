@@ -67,7 +67,11 @@ def http_restart_stream():
             if pipeline.restart_source(source_id):
                 return jsonify({"status": "ok", "id": source_id})
 
-        return jsonify({"status": "error", "message": "restart failed"}), 500
+        return jsonify({
+            "status": "error",
+            "message": f"Source {source_id} cannot be started. The RTSP stream is not available or not publishing.",
+            "suggestion": "Ensure the stream is publishing to rtsp://{relay_host}:8554/in_s{source_id} before adding it"
+        }), 400
 
 
 @app.route('/stream/status', methods=['GET'])
@@ -87,6 +91,43 @@ def http_status():
     return jsonify(status)
 
 
+@app.route('/stream/hard_reset', methods=['POST'])
+def http_hard_reset():
+    """Kill and recreate pipeline subprocess (recovery from fatal errors)"""
+    global pipeline_thread
+
+    print(f"\n{'='*70}")
+    print("HARD RESET requested - killing and recreating pipeline subprocess")
+    print(f"{'='*70}\n")
+
+    # Kill existing subprocess
+    if pipeline.pipeline is not None:
+        pipeline.destroy_pipeline()
+        if pipeline_thread:
+            pipeline_thread.join(timeout=2)
+            pipeline_thread = None
+
+    # Recreate pipeline
+    if not pipeline.create_pipeline(relay_host):
+        return jsonify({
+            "status": "error",
+            "message": "Failed to recreate pipeline after hard reset"
+        }), 500
+
+    # Start GLib loop in background thread
+    pipeline_thread = threading.Thread(target=pipeline.run_loop, daemon=True)
+    pipeline_thread.start()
+
+    print(f"\n{'='*70}")
+    print("✓ Pipeline subprocess recreated successfully")
+    print(f"{'='*70}\n")
+
+    return jsonify({
+        "status": "ok",
+        "message": "Pipeline subprocess recreated. All streams cleared. Use /stream/restart to add streams."
+    })
+
+
 def main(args):
     """Main entry point"""
     global relay_host
@@ -104,6 +145,7 @@ def main(args):
     print(f"HTTP API: http://localhost:{HTTP_API_PORT}")
     print(f"  POST /stream/restart {{\"id\": N}} - Start/restart stream N")
     print(f"  GET  /stream/status - Get status of all streams")
+    print(f"  POST /stream/hard_reset - Kill and recreate pipeline (fatal error recovery)")
     print(f"\nRelay host: {relay_host}")
     print(f"Input pattern: rtsp://{relay_host}:8554/in_s{{N}}")
     print(f"Output pattern: rtsp://localhost:{RTSP_SERVER_PORT}/x{{N}}")
