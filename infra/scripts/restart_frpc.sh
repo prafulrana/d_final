@@ -1,7 +1,7 @@
 #!/bin/bash
 # Restart local frpc with updated config
 
-FRPC_CONFIG="/root/d_final/infra/scripts/frpc/frpc.ini"
+FRPC_CONFIG="/root/d_final/infra/configs/frpc.ini"
 FRPC_LOG="/var/log/frpc.log"
 
 echo "Restarting frpc..."
