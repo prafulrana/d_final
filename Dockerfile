@@ -30,4 +30,4 @@ EXPOSE 5555
 # Set Python path to include pyds
 ENV PYTHONPATH=/opt/nvidia/deepstream/deepstream/sources/deepstream_python_apps/pyds/lib/python3.12/site-packages:$PYTHONPATH
 
-CMD ["python3", "-u", "/app/main.py", "rtsp://34.47.221.242:8554/in_s0", "rtsp://34.47.221.242:8554/in_s1", "rtsp://34.47.221.242:8554/in_s2"]
+CMD ["python3", "-u", "/app/main.py", "34.47.221.242"]

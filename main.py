@@ -9,12 +9,17 @@ from flask import Flask, request, jsonify
 import pipeline
 from config import *
 
-# Store URIs from command line
-source_uris = {}
+# Relay configuration
+relay_host = None
 pipeline_thread = None
 
 # Flask app
 app = Flask(__name__)
+
+
+def get_source_uri(source_id):
+    """Generate RTSP input URI from relay host and source ID"""
+    return f"rtsp://{relay_host}:8554/in_s{source_id}"
 
 
 @app.route('/stream/restart', methods=['POST'])
@@ -31,18 +36,14 @@ def http_restart_stream():
     if source_id < 0 or source_id >= MAX_NUM_SOURCES:
         return jsonify({"status": "error", "message": f"id must be 0-{MAX_NUM_SOURCES-1}"}), 400
 
-    if source_id not in source_uris:
-        return jsonify({"status": "error", "message": f"source {source_id} not configured"}), 400
-
     # Create pipeline on first source (0->1 transition)
     if pipeline.pipeline is None:
         print(f"\n{'='*70}")
         print("Creating pipeline for first source...")
         print(f"{'='*70}\n")
 
-        # Pass all URIs to pipeline
-        uris = [source_uris[i] for i in sorted(source_uris.keys())]
-        if not pipeline.create_pipeline(uris):
+        # Pass relay host to pipeline for URI generation
+        if not pipeline.create_pipeline(relay_host):
             return jsonify({"status": "error", "message": "Failed to create pipeline"}), 500
 
         # Start GLib loop in background thread
@@ -64,26 +65,25 @@ def http_status():
             "pipeline": "not_created",
             "active_streams": [],
             "count": 0,
-            "configured_sources": list(source_uris.keys())
+            "relay_host": relay_host
         })
 
     status = pipeline.get_status()
     status["pipeline"] = "running"
-    status["configured_sources"] = list(source_uris.keys())
+    status["relay_host"] = relay_host
     return jsonify(status)
 
 
 def main(args):
     """Main entry point"""
-    if len(args) < 2:
-        sys.stderr.write(f"usage: {args[0]} <uri1> [uri2] [uri3] ...\n")
+    global relay_host
+
+    if len(args) != 2:
+        sys.stderr.write(f"usage: {args[0]} <relay_host>\n")
+        sys.stderr.write(f"example: {args[0]} 34.47.221.242\n")
         sys.exit(1)
 
-    # Store URIs from command line
-    for i in range(len(args) - 1):
-        uri = args[i + 1]
-        source_uris[i] = uri
-        print(f"Configured source {i}: {uri}")
+    relay_host = args[1]
 
     print(f"\n{'='*70}")
     print("DeepStream Multi-Stream Control API")
@@ -91,8 +91,11 @@ def main(args):
     print(f"HTTP API: http://localhost:{HTTP_API_PORT}")
     print(f"  POST /stream/restart {{\"id\": N}} - Start/restart stream N")
     print(f"  GET  /stream/status - Get status of all streams")
-    print(f"\nConfigured sources: {len(source_uris)}")
-    print(f"Pipeline will be created on first /stream/restart call")
+    print(f"\nRelay host: {relay_host}")
+    print(f"Input pattern: rtsp://{relay_host}:8554/in_s{{N}}")
+    print(f"Output pattern: rtsp://localhost:{RTSP_SERVER_PORT}/x{{N}}")
+    print(f"Max streams: {MAX_NUM_SOURCES}")
+    print(f"\nPipeline will be created on first /stream/restart call")
     print(f"{'='*70}\n")
 
     # Start Flask (blocking)

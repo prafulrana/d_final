@@ -14,8 +14,8 @@ g_num_sources = 0
 g_eos_list = [False] * MAX_NUM_SOURCES
 g_source_enabled = [False] * MAX_NUM_SOURCES
 g_source_bin_list = [None] * MAX_NUM_SOURCES
-g_source_uris = {}
 g_output_bins = [None] * MAX_NUM_SOURCES
+g_relay_host = None
 
 # Pipeline elements
 loop = None
@@ -24,6 +24,11 @@ streammux = None
 pgie = None
 demux = None
 rtsp_server = None
+
+
+def get_source_uri(source_id):
+    """Generate RTSP input URI from relay host and source ID"""
+    return f"rtsp://{g_relay_host}:8554/in_s{source_id}"
 
 
 def decodebin_child_added(child_proxy, Object, name, user_data):
@@ -62,12 +67,12 @@ def cb_newpad(decodebin, pad, source_id):
             sys.stderr.write(f"Failed to link decodebin to pipeline: {pad_name}\n")
 
 
-def create_uridecode_bin(index, filename):
+def create_uridecode_bin(index):
     """Create uridecodebin for a given source"""
-    global g_source_uris, g_source_enabled
+    global g_source_enabled
 
-    print(f"Creating uridecodebin for [{filename}]")
-    g_source_uris[index] = filename
+    uri = get_source_uri(index)
+    print(f"Creating uridecodebin for [{uri}]")
 
     bin_name = f"source-bin-{index:02d}"
     bin = Gst.ElementFactory.make("uridecodebin", bin_name)
@@ -75,7 +80,7 @@ def create_uridecode_bin(index, filename):
         sys.stderr.write(f"Unable to create uri decode bin {bin_name}\n")
         return None
 
-    bin.set_property("uri", filename)
+    bin.set_property("uri", uri)
     bin.connect("pad-added", cb_newpad, index)
     bin.connect("child-added", decodebin_child_added, index)
     g_source_enabled[index] = True
@@ -163,7 +168,7 @@ def create_output_bin(source_id):
 
 def stop_release_source(source_id):
     """Stop and release a source bin from the pipeline"""
-    global g_num_sources, g_source_bin_list, g_output_bins, streammux, demux, pipeline
+    global g_num_sources, g_source_bin_list, g_output_bins, g_source_enabled, streammux, demux, pipeline
 
     state_return = g_source_bin_list[source_id].set_state(Gst.State.NULL)
 
@@ -179,8 +184,19 @@ def stop_release_source(source_id):
             streammux.release_request_pad(sinkpad)
 
         pipeline.remove(g_source_bin_list[source_id])
+        g_source_bin_list[source_id] = None
+        g_source_enabled[source_id] = False
         g_num_sources -= 1
         print(f"Released source {source_id}")
+
+        # N→0 transition: Tear down entire pipeline
+        if g_num_sources == 0:
+            print("\n" + "="*70)
+            print("All sources removed - tearing down pipeline")
+            print("="*70 + "\n")
+            destroy_pipeline()
+            return
+
     else:
         print(f"Failed to stop source {source_id}")
 
@@ -201,17 +217,13 @@ def stop_release_source(source_id):
 
 def restart_source(source_id):
     """Restart a source by stopping and recreating it and its output bin"""
-    global g_source_uris, g_source_enabled, g_source_bin_list, g_output_bins, pipeline, g_num_sources, rtsp_server
+    global g_source_enabled, g_source_bin_list, g_output_bins, pipeline, g_num_sources, rtsp_server
 
     if source_id < 0 or source_id >= MAX_NUM_SOURCES:
         print(f"Invalid source_id {source_id}")
         return False
 
-    if source_id not in g_source_uris:
-        print(f"Source {source_id} was never created")
-        return False
-
-    uri = g_source_uris[source_id]
+    uri = get_source_uri(source_id)
     print(f"Restarting source {source_id}: {uri}")
 
     # Stop and release the old source
@@ -220,7 +232,7 @@ def restart_source(source_id):
         time.sleep(SOURCE_RESTART_DELAY_SEC)
 
     # Recreate the source
-    source_bin = create_uridecode_bin(source_id, uri)
+    source_bin = create_uridecode_bin(source_id)
     if not source_bin:
         print(f"Failed to recreate source {source_id}")
         return False
@@ -279,20 +291,19 @@ def restart_source(source_id):
             if state_return == Gst.StateChangeReturn.ASYNC:
                 elem.get_state(Gst.CLOCK_TIME_NONE)
 
-        # Create RTSP factory dynamically for this source (if not source 0)
-        if source_id > 0:
-            try:
-                mounts = rtsp_server.get_mount_points()
-                path = f"/x{source_id}"
-                port = RTSP_UDPSINK_BASE_PORT + source_id
-                factory = GstRtspServer.RTSPMediaFactory.new()
-                launch_str = f"( udpsrc name=pay0 port={port} buffer-size={RTSP_UDP_BUFFER_SIZE} caps=\"{RTSP_CAPS_STRING}\" )"
-                factory.set_launch(launch_str)
-                factory.set_shared(True)
-                mounts.add_factory(path, factory)
-                print(f"✓ RTSP factory created at {path} (listening on UDP {port})")
-            except Exception as e:
-                print(f"⚠ Failed to create RTSP factory for {path}: {e}")
+        # Create RTSP factory dynamically for this source
+        try:
+            mounts = rtsp_server.get_mount_points()
+            path = f"/x{source_id}"
+            port = RTSP_UDPSINK_BASE_PORT + source_id
+            factory = GstRtspServer.RTSPMediaFactory.new()
+            launch_str = f"( udpsrc name=pay0 port={port} buffer-size={RTSP_UDP_BUFFER_SIZE} caps=\"{RTSP_CAPS_STRING}\" )"
+            factory.set_launch(launch_str)
+            factory.set_shared(True)
+            mounts.add_factory(path, factory)
+            print(f"✓ RTSP factory created at {path} (listening on UDP {port})")
+        except Exception as e:
+            print(f"⚠ Failed to create RTSP factory for {path}: {e}")
 
     print(f"✓ Restarted source {source_id}")
     return True
@@ -300,15 +311,10 @@ def restart_source(source_id):
 
 def bus_call(bus, message, loop):
     """Handle GStreamer bus messages"""
-    global g_eos_list, pipeline
+    global g_eos_list
     t = message.type
     if t == Gst.MessageType.EOS:
-        sys.stdout.write("End-of-stream - resetting pipeline state\n")
-        # Reset pipeline to accept new sources after all streams EOS
-        if pipeline:
-            pipeline.set_state(Gst.State.READY)
-            pipeline.set_state(Gst.State.PLAYING)
-            print("✓ Pipeline reset to PLAYING state")
+        sys.stdout.write("End-of-stream\n")
     elif t == Gst.MessageType.WARNING:
         err, debug = message.parse_warning()
         sys.stderr.write(f"Warning: {err}: {debug}\n")
@@ -328,12 +334,13 @@ def bus_call(bus, message, loop):
     return True
 
 
-def create_pipeline(uris):
+def create_pipeline(relay_host):
     """Create and start the DeepStream pipeline with first source"""
-    global g_num_sources, g_source_bin_list, g_output_bins
+    global g_num_sources, g_source_bin_list, g_output_bins, g_relay_host
     global loop, pipeline, streammux, pgie, demux, rtsp_server
 
     Gst.init(None)
+    g_relay_host = relay_host
 
     print("Creating pipeline")
     pipeline = Gst.Pipeline()
@@ -355,21 +362,6 @@ def create_pipeline(uris):
     streammux.set_property("height", MUXER_OUTPUT_HEIGHT)
 
     pipeline.add(streammux)
-
-    # Store all URIs for restart API
-    for i, uri in enumerate(uris):
-        g_source_uris[i] = uri
-
-    # Create first source at startup
-    print("Creating source_bin 0")
-    source_bin = create_uridecode_bin(0, uris[0])
-    if not source_bin:
-        sys.stderr.write("Failed to create source bin 0\n")
-        return False
-    g_source_bin_list[0] = source_bin
-    pipeline.add(source_bin)
-
-    g_num_sources = 1
 
     print("Creating pgie")
     pgie = Gst.ElementFactory.make("nvinfer", "primary-inference")
@@ -399,48 +391,21 @@ def create_pipeline(uris):
     rtsp_server.props.service = str(RTSP_SERVER_PORT)
     rtsp_server.attach(None)
 
-    # Create RTSP factory for first source (others created on-demand)
-    mounts = rtsp_server.get_mount_points()
-    factory = GstRtspServer.RTSPMediaFactory.new()
-    launch_str = f"( udpsrc name=pay0 port={RTSP_UDPSINK_BASE_PORT} buffer-size={RTSP_UDP_BUFFER_SIZE} caps=\"{RTSP_CAPS_STRING}\" )"
-    factory.set_launch(launch_str)
-    factory.set_shared(True)
-    mounts.add_factory("/x0", factory)
-    print(f"✓ RTSP factory created at /x0 (UDP port {RTSP_UDPSINK_BASE_PORT})")
-
-    # Create output bin for first source
-    print("Creating output bin for source 0")
-    output_bin = create_output_bin(0)
-    if not output_bin:
-        sys.stderr.write("Failed to create output bin for source 0\n")
-        return False
-    g_output_bins[0] = output_bin
-
     # Setup GLib event loop and bus
     loop = GLib.MainLoop()
     bus = pipeline.get_bus()
     bus.add_signal_watch()
     bus.connect("message", bus_call, loop)
 
-    # Start pipeline
-    pipeline.set_state(Gst.State.PAUSED)
-    print(f"Now playing: {uris[0]} -> rtsp://localhost:{RTSP_SERVER_PORT}/x0")
+    # Start pipeline (empty, sources added via restart_source)
     pipeline.set_state(Gst.State.PLAYING)
 
-    # Wait for pipeline to reach PLAYING state
-    status, state, pending = pipeline.get_state(Gst.CLOCK_TIME_NONE)
-
-    # Sync output elements with pipeline
-    if g_output_bins[0]:
-        for elem in g_output_bins[0]["elements"]:
-            elem.sync_state_with_parent()
-
     print("\n" + "="*70)
-    print("✓ Pipeline ready")
-    print(f"  Active sources: 1/{MAX_NUM_SOURCES}")
+    print("✓ Pipeline ready (empty)")
+    print(f"  Max sources: {MAX_NUM_SOURCES}")
     print(f"  Batch size: {MAX_NUM_SOURCES}")
     print(f"\nRTSP Server: rtsp://localhost:{RTSP_SERVER_PORT}")
-    print(f"  Stream 0: /x0")
+    print(f"  Paths: /x{{N}} (created on-demand)")
     print(f"\nHTTP Control API: http://localhost:{HTTP_API_PORT}")
     print(f"  POST /stream/restart {{\"id\": N}}")
     print(f"  GET  /stream/status")
@@ -451,7 +416,8 @@ def create_pipeline(uris):
 
 def destroy_pipeline():
     """Destroy the pipeline and clean up resources"""
-    global pipeline, loop
+    global pipeline, loop, streammux, pgie, demux, rtsp_server
+    global g_num_sources, g_source_enabled, g_source_bin_list, g_output_bins, g_eos_list
 
     if pipeline:
         print("Shutting down pipeline")
@@ -462,11 +428,26 @@ def destroy_pipeline():
         loop.quit()
         loop = None
 
+    # Reset pipeline elements
+    streammux = None
+    pgie = None
+    demux = None
+    rtsp_server = None
+
+    # Reset global state
+    g_num_sources = 0
+    g_source_enabled = [False] * MAX_NUM_SOURCES
+    g_source_bin_list = [None] * MAX_NUM_SOURCES
+    g_output_bins = [None] * MAX_NUM_SOURCES
+    g_eos_list = [False] * MAX_NUM_SOURCES
+
+    print("✓ Pipeline destroyed, ready for fresh creation")
+
 
 def get_status():
     """Get current pipeline status"""
     active = [i for i in range(MAX_NUM_SOURCES) if g_source_enabled[i]]
-    uris = {i: g_source_uris.get(i, "") for i in active}
+    uris = {i: get_source_uri(i) for i in active}
     rtsp_paths = {i: f"/x{i}" for i in active}
     return {
         "active_streams": active,
