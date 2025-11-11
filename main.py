@@ -54,6 +54,19 @@ def http_restart_stream():
     if pipeline.restart_source(source_id):
         return jsonify({"status": "ok", "id": source_id})
     else:
+        # Check if subprocess died - if so, recreate and retry
+        if pipeline.pipeline is None:
+            print(f"\n{'='*70}")
+            print("Subprocess died - recreating pipeline...")
+            print(f"{'='*70}\n")
+
+            if not pipeline.create_pipeline(relay_host):
+                return jsonify({"status": "error", "message": "Failed to recreate pipeline"}), 500
+
+            # Retry restart
+            if pipeline.restart_source(source_id):
+                return jsonify({"status": "ok", "id": source_id})
+
         return jsonify({"status": "error", "message": "restart failed"}), 500
 
 
