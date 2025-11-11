@@ -254,6 +254,7 @@ GPU memory usage: ~390 MiB per active stream
 5. **Code is modular**: Edit config.py for constants, pipeline.py for GStreamer, main.py for API
 6. **Don't manually manage engines**: DeepStream auto-caches in `/models/`, persists across restarts
 7. **Training separation**: Production code in `/root/d_final/`, training in `/root/d_final/training/`
+8. **ALWAYS use TCP for RTSP probing**: Use `ffprobe -rtsp_transport tcp rtsp://...` NOT plain `ffprobe rtsp://...` (UDP times out)
 
 ## Training Workflow
 

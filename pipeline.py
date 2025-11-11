@@ -300,10 +300,15 @@ def restart_source(source_id):
 
 def bus_call(bus, message, loop):
     """Handle GStreamer bus messages"""
-    global g_eos_list
+    global g_eos_list, pipeline
     t = message.type
     if t == Gst.MessageType.EOS:
-        sys.stdout.write("End-of-stream\n")
+        sys.stdout.write("End-of-stream - resetting pipeline state\n")
+        # Reset pipeline to accept new sources after all streams EOS
+        if pipeline:
+            pipeline.set_state(Gst.State.READY)
+            pipeline.set_state(Gst.State.PLAYING)
+            print("✓ Pipeline reset to PLAYING state")
     elif t == Gst.MessageType.WARNING:
         err, debug = message.parse_warning()
         sys.stderr.write(f"Warning: {err}: {debug}\n")
