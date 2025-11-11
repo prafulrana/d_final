@@ -423,20 +423,43 @@ def destroy_pipeline():
     global pipeline, loop, streammux, pgie, demux, rtsp_server
     global g_num_sources, g_source_enabled, g_source_bin_list, g_output_bins, g_eos_list
 
+    # Remove all RTSP factories from mount points first
+    if rtsp_server:
+        try:
+            mounts = rtsp_server.get_mount_points()
+            removed_count = 0
+            for i in range(MAX_NUM_SOURCES):
+                path = f"/x{i}"
+                try:
+                    mounts.remove_factory(path)
+                    removed_count += 1
+                    print(f"✓ Removed RTSP factory {path}")
+                except Exception as e:
+                    # Factory doesn't exist, skip silently
+                    pass
+            if removed_count > 0:
+                print(f"✓ Removed {removed_count} RTSP factories")
+        except Exception as e:
+            print(f"⚠ Error removing RTSP factories: {e}")
+
+    # Reset RTSP server
+    rtsp_server = None
+
+    # Now destroy pipeline (this will clean up all elements including output bins)
     if pipeline:
         print("Shutting down pipeline")
         pipeline.set_state(Gst.State.NULL)
         pipeline = None
 
-    if loop:
-        loop.quit()
-        loop = None
-
     # Reset pipeline elements
     streammux = None
     pgie = None
     demux = None
-    rtsp_server = None
+
+    # Quit loop
+    if loop:
+        loop.quit()
+        loop = None
 
     # Reset global state
     g_num_sources = 0
