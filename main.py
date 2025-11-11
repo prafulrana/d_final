@@ -13,9 +13,6 @@ from config import *
 source_uris = {}
 pipeline_thread = None
 
-# API key for remote access
-API_KEY = "bowl2024"
-
 # Flask app
 app = Flask(__name__)
 
@@ -24,10 +21,6 @@ app = Flask(__name__)
 def http_restart_stream():
     """Restart a stream by source ID"""
     global pipeline_thread
-
-    # Check API key
-    if request.headers.get('X-Key') != API_KEY:
-        return jsonify({"status": "error", "message": "invalid key"}), 401
 
     data = request.json
     source_id = data.get('id')

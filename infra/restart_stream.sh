@@ -9,11 +9,9 @@ if [ -z "$1" ]; then
 fi
 
 STREAM_ID=$1
-API_KEY="bowl2024"
 
-echo "Restarting stream ${STREAM_ID} via relay..."
+echo "Restarting stream ${STREAM_ID}..."
 curl -X POST http://34.47.221.242:5555/stream/restart \
-    -H "X-Key: ${API_KEY}" \
     -H "Content-Type: application/json" \
     -d "{\"id\": ${STREAM_ID}}"
 
