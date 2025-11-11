@@ -314,7 +314,11 @@ def bus_call(bus, message, loop):
     global g_eos_list
     t = message.type
     if t == Gst.MessageType.EOS:
-        sys.stdout.write("End-of-stream\n")
+        sys.stdout.write("End-of-stream - all sources EOS'd\n")
+        print("\n" + "="*70)
+        print("All sources ended - tearing down pipeline")
+        print("="*70 + "\n")
+        destroy_pipeline()
     elif t == Gst.MessageType.WARNING:
         err, debug = message.parse_warning()
         sys.stderr.write(f"Warning: {err}: {debug}\n")
