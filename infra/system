@@ -1,0 +1,76 @@
+#!/bin/bash
+# Full system (frpc + DeepStream ds-single)
+
+FRPC_CONFIG="/root/d_final/infra/scripts/frpc/frpc.ini"
+FRPC_LOG="/var/log/frpc.log"
+
+frpc_start() {
+    if pgrep -x frpc > /dev/null; then
+        echo "✓ frpc already running"
+        return 0
+    fi
+    nohup frpc -c "$FRPC_CONFIG" > "$FRPC_LOG" 2>&1 &
+    sleep 3
+    if pgrep -x frpc > /dev/null; then
+        if grep -q "login to server success" "$FRPC_LOG" 2>/dev/null; then
+            echo "✓ frpc started and connected"
+            return 0
+        else
+            echo "✓ frpc started (waiting for connection...)"
+            return 0
+        fi
+    else
+        echo "✗ frpc failed to start"
+        return 1
+    fi
+}
+
+frpc_stop() {
+    if pgrep -x frpc > /dev/null; then
+        pkill -x frpc
+        sleep 1
+        echo "✓ frpc stopped"
+    fi
+}
+
+ds_start() {
+    /root/d_final/run.sh
+}
+
+ds_stop() {
+    docker stop ds-single 2>/dev/null
+    docker rm ds-single 2>/dev/null
+    echo "✓ ds-single stopped"
+}
+
+case "$1" in
+    start)
+        frpc_start && ds_start
+        ;;
+    stop)
+        ds_stop && frpc_stop
+        ;;
+    restart)
+        $0 stop
+        sleep 1
+        $0 start
+        ;;
+    status)
+        echo "=== FRPC Status ==="
+        if pgrep -x frpc > /dev/null; then
+            echo "✓ frpc running"
+        else
+            echo "✗ frpc not running"
+        fi
+        echo ""
+        echo "=== DeepStream Status ==="
+        docker ps --filter "name=ds-single" --format "table {{.Names}}\t{{.Status}}"
+        echo ""
+        echo "=== MediaMTX Relay Status ==="
+        /root/d_final/infra/relay status
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac

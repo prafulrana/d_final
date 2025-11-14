@@ -1,0 +1,353 @@
+# Logging
+logLevel: info
+
+# RTSP / HLS / RTMP (defaults enabled by the container)
+rtsp: yes
+hls: yes
+rtmp: yes
+
+# WebRTC configuration
+webrtc: yes
+webrtcAddress: ":8889"
+webrtcEncryption: no
+webrtcAllowOrigin: "*"
+webrtcLocalUDPAddress: ":8189"
+webrtcLocalTCPAddress: ":8189"
+webrtcIPsFromInterfaces: no
+webrtcAdditionalHosts: ["34.47.221.242"]
+webrtcICEServers2: []
+
+# API configuration
+api: yes
+apiAddress: ":9997"
+
+# Path configuration (s0-s2 with YOLOv8 processing)
+pathDefaults:
+  source: publisher
+  rtspTransport: tcp
+
+paths:
+  in_s0:
+    source: publisher
+    rtspTransport: tcp
+  in_s1:
+    source: publisher
+    rtspTransport: tcp
+  in_s2:
+    source: publisher
+    rtspTransport: tcp
+  s0:
+    source: rtsp://127.0.0.1:9500/ds-test
+    rtspTransport: tcp
+  s1:
+    source: rtsp://127.0.0.1:9501/ds-test
+    rtspTransport: tcp
+  s2:
+    source: rtsp://127.0.0.1:9502/ds-test
+    rtspTransport: tcp
+  in_s3:
+    source: publisher
+    rtspTransport: tcp
+  s3:
+    source: rtsp://127.0.0.1:9503/ds-test
+    rtspTransport: tcp
+  in_s4:
+    source: publisher
+    rtspTransport: tcp
+  in_s5:
+    source: publisher
+    rtspTransport: tcp
+  in_s6:
+    source: publisher
+    rtspTransport: tcp
+  in_s7:
+    source: publisher
+    rtspTransport: tcp
+  in_s8:
+    source: publisher
+    rtspTransport: tcp
+  in_s9:
+    source: publisher
+    rtspTransport: tcp
+  in_s10:
+    source: publisher
+    rtspTransport: tcp
+  in_s11:
+    source: publisher
+    rtspTransport: tcp
+  in_s12:
+    source: publisher
+    rtspTransport: tcp
+  in_s13:
+    source: publisher
+    rtspTransport: tcp
+  in_s14:
+    source: publisher
+    rtspTransport: tcp
+  in_s15:
+    source: publisher
+    rtspTransport: tcp
+  in_s16:
+    source: publisher
+    rtspTransport: tcp
+  in_s17:
+    source: publisher
+    rtspTransport: tcp
+  in_s18:
+    source: publisher
+    rtspTransport: tcp
+  in_s19:
+    source: publisher
+    rtspTransport: tcp
+  in_s20:
+    source: publisher
+    rtspTransport: tcp
+  in_s21:
+    source: publisher
+    rtspTransport: tcp
+  in_s22:
+    source: publisher
+    rtspTransport: tcp
+  in_s23:
+    source: publisher
+    rtspTransport: tcp
+  in_s24:
+    source: publisher
+    rtspTransport: tcp
+  in_s25:
+    source: publisher
+    rtspTransport: tcp
+  in_s26:
+    source: publisher
+    rtspTransport: tcp
+  in_s27:
+    source: publisher
+    rtspTransport: tcp
+  in_s28:
+    source: publisher
+    rtspTransport: tcp
+  in_s29:
+    source: publisher
+    rtspTransport: tcp
+  in_s30:
+    source: publisher
+    rtspTransport: tcp
+  in_s31:
+    source: publisher
+    rtspTransport: tcp
+  in_s32:
+    source: publisher
+    rtspTransport: tcp
+  in_s33:
+    source: publisher
+    rtspTransport: tcp
+  in_s34:
+    source: publisher
+    rtspTransport: tcp
+  in_s35:
+    source: publisher
+    rtspTransport: tcp
+  s4:
+    source: rtsp://127.0.0.1:9504/ds-test
+    rtspTransport: tcp
+  s5:
+    source: rtsp://127.0.0.1:9505/ds-test
+    rtspTransport: tcp
+  s6:
+    source: rtsp://127.0.0.1:9506/ds-test
+    rtspTransport: tcp
+  s7:
+    source: rtsp://127.0.0.1:9507/ds-test
+    rtspTransport: tcp
+  s8:
+    source: rtsp://127.0.0.1:9508/ds-test
+    rtspTransport: tcp
+  s9:
+    source: rtsp://127.0.0.1:9509/ds-test
+    rtspTransport: tcp
+  s10:
+    source: rtsp://127.0.0.1:9510/ds-test
+    rtspTransport: tcp
+  s11:
+    source: rtsp://127.0.0.1:9511/ds-test
+    rtspTransport: tcp
+  s12:
+    source: rtsp://127.0.0.1:9512/ds-test
+    rtspTransport: tcp
+  s13:
+    source: rtsp://127.0.0.1:9513/ds-test
+    rtspTransport: tcp
+  s14:
+    source: rtsp://127.0.0.1:9514/ds-test
+    rtspTransport: tcp
+  s15:
+    source: rtsp://127.0.0.1:9515/ds-test
+    rtspTransport: tcp
+  s16:
+    source: rtsp://127.0.0.1:9516/ds-test
+    rtspTransport: tcp
+  s17:
+    source: rtsp://127.0.0.1:9517/ds-test
+    rtspTransport: tcp
+  s18:
+    source: rtsp://127.0.0.1:9518/ds-test
+    rtspTransport: tcp
+  s19:
+    source: rtsp://127.0.0.1:9519/ds-test
+    rtspTransport: tcp
+  s20:
+    source: rtsp://127.0.0.1:9520/ds-test
+    rtspTransport: tcp
+  s21:
+    source: rtsp://127.0.0.1:9521/ds-test
+    rtspTransport: tcp
+  s22:
+    source: rtsp://127.0.0.1:9522/ds-test
+    rtspTransport: tcp
+  s23:
+    source: rtsp://127.0.0.1:9523/ds-test
+    rtspTransport: tcp
+  s24:
+    source: rtsp://127.0.0.1:9524/ds-test
+    rtspTransport: tcp
+  s25:
+    source: rtsp://127.0.0.1:9525/ds-test
+    rtspTransport: tcp
+  s26:
+    source: rtsp://127.0.0.1:9526/ds-test
+    rtspTransport: tcp
+  s27:
+    source: rtsp://127.0.0.1:9527/ds-test
+    rtspTransport: tcp
+  s28:
+    source: rtsp://127.0.0.1:9528/ds-test
+    rtspTransport: tcp
+  s29:
+    source: rtsp://127.0.0.1:9529/ds-test
+    rtspTransport: tcp
+  s30:
+    source: rtsp://127.0.0.1:9530/ds-test
+    rtspTransport: tcp
+  s31:
+    source: rtsp://127.0.0.1:9531/ds-test
+    rtspTransport: tcp
+  s32:
+    source: rtsp://127.0.0.1:9532/ds-test
+    rtspTransport: tcp
+  s33:
+    source: rtsp://127.0.0.1:9533/ds-test
+    rtspTransport: tcp
+  s34:
+    source: rtsp://127.0.0.1:9534/ds-test
+    rtspTransport: tcp
+  s35:
+    source: rtsp://127.0.0.1:9535/ds-test
+    rtspTransport: tcp
+  x0:
+    source: rtsp://127.0.0.1:9600/x0
+    rtspTransport: tcp
+  x1:
+    source: rtsp://127.0.0.1:9600/x1
+    rtspTransport: tcp
+  x2:
+    source: rtsp://127.0.0.1:9600/x2
+    rtspTransport: tcp
+  x3:
+    source: rtsp://127.0.0.1:9600/x3
+    rtspTransport: tcp
+  x4:
+    source: rtsp://127.0.0.1:9600/x4
+    rtspTransport: tcp
+  x5:
+    source: rtsp://127.0.0.1:9600/x5
+    rtspTransport: tcp
+  x6:
+    source: rtsp://127.0.0.1:9600/x6
+    rtspTransport: tcp
+  x7:
+    source: rtsp://127.0.0.1:9600/x7
+    rtspTransport: tcp
+  x8:
+    source: rtsp://127.0.0.1:9600/x8
+    rtspTransport: tcp
+  x9:
+    source: rtsp://127.0.0.1:9600/x9
+    rtspTransport: tcp
+  x10:
+    source: rtsp://127.0.0.1:9600/x10
+    rtspTransport: tcp
+  x11:
+    source: rtsp://127.0.0.1:9600/x11
+    rtspTransport: tcp
+  x12:
+    source: rtsp://127.0.0.1:9600/x12
+    rtspTransport: tcp
+  x13:
+    source: rtsp://127.0.0.1:9600/x13
+    rtspTransport: tcp
+  x14:
+    source: rtsp://127.0.0.1:9600/x14
+    rtspTransport: tcp
+  x15:
+    source: rtsp://127.0.0.1:9600/x15
+    rtspTransport: tcp
+  x16:
+    source: rtsp://127.0.0.1:9600/x16
+    rtspTransport: tcp
+  x17:
+    source: rtsp://127.0.0.1:9600/x17
+    rtspTransport: tcp
+  x18:
+    source: rtsp://127.0.0.1:9600/x18
+    rtspTransport: tcp
+  x19:
+    source: rtsp://127.0.0.1:9600/x19
+    rtspTransport: tcp
+  x20:
+    source: rtsp://127.0.0.1:9600/x20
+    rtspTransport: tcp
+  x21:
+    source: rtsp://127.0.0.1:9600/x21
+    rtspTransport: tcp
+  x22:
+    source: rtsp://127.0.0.1:9600/x22
+    rtspTransport: tcp
+  x23:
+    source: rtsp://127.0.0.1:9600/x23
+    rtspTransport: tcp
+  x24:
+    source: rtsp://127.0.0.1:9600/x24
+    rtspTransport: tcp
+  x25:
+    source: rtsp://127.0.0.1:9600/x25
+    rtspTransport: tcp
+  x26:
+    source: rtsp://127.0.0.1:9600/x26
+    rtspTransport: tcp
+  x27:
+    source: rtsp://127.0.0.1:9600/x27
+    rtspTransport: tcp
+  x28:
+    source: rtsp://127.0.0.1:9600/x28
+    rtspTransport: tcp
+  x29:
+    source: rtsp://127.0.0.1:9600/x29
+    rtspTransport: tcp
+  x30:
+    source: rtsp://127.0.0.1:9600/x30
+    rtspTransport: tcp
+  x31:
+    source: rtsp://127.0.0.1:9600/x31
+    rtspTransport: tcp
+  x32:
+    source: rtsp://127.0.0.1:9600/x32
+    rtspTransport: tcp
+  x33:
+    source: rtsp://127.0.0.1:9600/x33
+    rtspTransport: tcp
+  x34:
+    source: rtsp://127.0.0.1:9600/x34
+    rtspTransport: tcp
+  x35:
+    source: rtsp://127.0.0.1:9600/x35
+    rtspTransport: tcp

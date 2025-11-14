@@ -1,1 +1,3 @@
-ball
+bowling-ball
+bowling-pins
+sweep board
